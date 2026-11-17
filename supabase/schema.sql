@@ -68,3 +68,19 @@ begin
     alter publication supabase_realtime add table public.user_settings;
   end if;
 end $$;
+
+-- ---------- v2 (safe to re-run): time of each entry + monthly plan ----------
+alter table public.transactions add column if not exists time_of_day text not null default '';
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'transactions_time_of_day_check') then
+    alter table public.transactions
+      add constraint transactions_time_of_day_check check (time_of_day = '' or time_of_day ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$');
+  end if;
+end $$;
+
+-- Salary, fixed costs and per-category budgets: {"items": [{id, kind, categoryId, amount, label}]}
+alter table public.user_settings add column if not exists plan jsonb not null default '{"items": []}'::jsonb;
+
+-- Make the new columns visible to the API immediately.
+notify pgrst, 'reload schema';

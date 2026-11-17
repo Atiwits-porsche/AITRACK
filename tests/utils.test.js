@@ -59,7 +59,7 @@ test('groupByDate orders newest first with a daily net', () => {
 test('toCSV escapes commas/quotes and includes BOM for Excel', () => {
   const csv = U.toCSV([{ type: 'expense', amount: 10, categoryId: 'x', date: '2026-01-01', note: 'a, "b"' }], () => 'อาหาร');
   assert.ok(csv.startsWith('﻿'));
-  assert.ok(csv.includes('2026-01-01,รายจ่าย,อาหาร,10.00,"a, ""b"""'));
+  assert.ok(csv.includes('2026-01-01,,รายจ่าย,อาหาร,10.00,"a, ""b"""'));
 });
 
 test('escapeHTML neutralises markup', () => {
@@ -76,4 +76,54 @@ test('formatCompact', () => {
 test('percentChange handles zero baseline', () => {
   assert.equal(U.percentChange(150, 100), 50);
   assert.equal(U.percentChange(10, 0), null);
+});
+
+test('toCSV includes the time column', () => {
+  const csv = U.toCSV([{ type: 'expense', amount: 45, categoryId: 'x', date: '2026-01-02', time: '12:30', note: '' }], () => 'ค่ากิน');
+  assert.ok(csv.split('\n')[0].includes('เวลา'));
+  assert.ok(csv.includes('2026-01-02,12:30,รายจ่าย,ค่ากิน,45.00,'));
+});
+
+test('timeBucket maps clock times to meals and ignores blanks', () => {
+  assert.equal(U.timeBucket('07:15').key, 'morning');
+  assert.equal(U.timeBucket('12:00').key, 'noon');
+  assert.equal(U.timeBucket('18:45').key, 'evening');
+  assert.equal(U.timeBucket('23:10').key, 'night');
+  assert.equal(U.timeBucket('02:00').key, 'night');
+  assert.equal(U.timeBucket(''), null);
+  assert.equal(U.timeBucket(undefined), null);
+});
+
+test('byTimeOfDay totals per bucket with a bucket for missing times', () => {
+  const r = U.byTimeOfDay([
+    { amount: 50, time: '08:00' }, { amount: 70, time: '12:30' }, { amount: 30.5, time: '12:45' }, { amount: 99 },
+  ]);
+  const get = (k) => r.find((x) => x.key === k);
+  assert.deepEqual([get('morning').total, get('noon').total, get('noon').count, get('none').total], [50, 100.5, 2, 99]);
+});
+
+test('groupByDate puts later times first within a day', () => {
+  const g = U.groupByDate([
+    { id: 'a', type: 'expense', amount: 1, date: '2026-11-01', time: '08:00' },
+    { id: 'b', type: 'expense', amount: 1, date: '2026-11-01', time: '19:00' },
+  ]);
+  assert.deepEqual(g[0].items.map((t) => t.id), ['b', 'a']);
+});
+
+test('planTotals and planByCategory', () => {
+  const items = [
+    { kind: 'income', categoryId: 'salary', amount: 20000 },
+    { kind: 'fixed', categoryId: 'home', amount: 5000 },
+    { kind: 'budget', categoryId: 'food', amount: 3000 },
+    { kind: 'budget', categoryId: 'food', amount: 500 },
+  ];
+  assert.deepEqual(U.planTotals(items), { income: 20000, fixed: 5000, budget: 3500, expense: 8500, free: 11500 });
+  const m = U.planByCategory(items);
+  assert.deepEqual(m.get('food'), { fixed: 0, budget: 3500, total: 3500 });
+  assert.deepEqual(m.get('home'), { fixed: 5000, budget: 0, total: 5000 });
+  assert.equal(m.has('salary'), false);
+});
+
+test('nowHHMM pads hours and minutes', () => {
+  assert.equal(U.nowHHMM(new Date(2026, 0, 1, 7, 5)), '07:05');
 });

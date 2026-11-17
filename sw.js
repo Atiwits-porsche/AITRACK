@@ -1,5 +1,5 @@
 /* Offline support: network-first for app files, falling back to cache. */
-const CACHE = 'aitrack-v3';
+const CACHE = 'aitrack-v4';
 const ASSETS = ['./', 'index.html', 'css/style.css', 'js/config.js', 'js/utils.js', 'js/store.js', 'js/cloud.js', 'js/charts.js', 'js/app.js', 'icon.svg', 'manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {

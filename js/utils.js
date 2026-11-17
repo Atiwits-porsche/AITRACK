@@ -140,7 +140,7 @@
 
   /** Group sorted transactions into [{date, items, net}] newest first */
   function groupByDate(txs) {
-    const sorted = [...txs].sort((a, b) => (b.date.localeCompare(a.date)) || (b.createdAt || 0) - (a.createdAt || 0));
+    const sorted = [...txs].sort((a, b) => (b.date.localeCompare(a.date)) || (b.time || '').localeCompare(a.time || '') || (b.createdAt || 0) - (a.createdAt || 0));
     const groups = [];
     for (const t of sorted) {
       let g = groups[groups.length - 1];
@@ -150,6 +150,63 @@
     }
     for (const g of groups) g.net = round2(g.net);
     return groups;
+  }
+
+  /** Current local time as "HH:MM". */
+  function nowHHMM(d) {
+    d = d || new Date();
+    return pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  const TIME_BUCKETS = [
+    { key: 'morning', label: 'เช้า', range: '05:00–10:59', meal: 'มื้อเช้า' },
+    { key: 'noon', label: 'กลางวัน', range: '11:00–14:59', meal: 'มื้อกลางวัน' },
+    { key: 'evening', label: 'เย็น', range: '15:00–20:59', meal: 'มื้อเย็น' },
+    { key: 'night', label: 'ดึก', range: '21:00–04:59', meal: 'มื้อดึก' },
+  ];
+
+  /** Time-of-day bucket for "HH:MM", or null when no time was recorded. */
+  function timeBucket(hhmm) {
+    const m = /^(\d{2}):(\d{2})$/.exec(hhmm || '');
+    if (!m) return null;
+    const h = Number(m[1]);
+    if (h >= 5 && h < 11) return TIME_BUCKETS[0];
+    if (h >= 11 && h < 15) return TIME_BUCKETS[1];
+    if (h >= 15 && h < 21) return TIME_BUCKETS[2];
+    return TIME_BUCKETS[3];
+  }
+
+  /** [{key, label, range, total, count}] in time-of-day order; entries without a time go to "none". */
+  function byTimeOfDay(txs) {
+    const rows = TIME_BUCKETS.map((b) => ({ ...b, total: 0, count: 0 }));
+    const none = { key: 'none', label: 'ไม่ระบุเวลา', range: '', total: 0, count: 0 };
+    for (const t of txs) {
+      const b = timeBucket(t.time);
+      const row = b ? rows.find((r) => r.key === b.key) : none;
+      row.total += t.amount; row.count += 1;
+    }
+    return [...rows, none].map((r) => ({ ...r, total: round2(r.total) }));
+  }
+
+  /** Monthly plan totals. items: [{kind: 'income'|'fixed'|'budget', amount}] */
+  function planTotals(items) {
+    const sum = (k) => round2((items || []).filter((i) => i.kind === k).reduce((a, i) => a + i.amount, 0));
+    const income = sum('income'), fixed = sum('fixed'), budget = sum('budget');
+    const expense = round2(fixed + budget);
+    return { income, fixed, budget, expense, free: round2(income - expense) };
+  }
+
+  /** Map categoryId → {fixed, budget, total} of planned expense. */
+  function planByCategory(items) {
+    const map = new Map();
+    for (const i of items || []) {
+      if (i.kind === 'income') continue;
+      const e = map.get(i.categoryId) || { fixed: 0, budget: 0, total: 0 };
+      e[i.kind] = round2(e[i.kind] + i.amount);
+      e.total = round2(e.total + i.amount);
+      map.set(i.categoryId, e);
+    }
+    return map;
   }
 
   function percentChange(curr, prev) {
@@ -163,10 +220,10 @@
   }
 
   function toCSV(txs, categoryName) {
-    const rows = [['วันที่', 'ประเภท', 'หมวดหมู่', 'จำนวนเงิน', 'บันทึก']];
-    const sorted = [...txs].sort((a, b) => a.date.localeCompare(b.date));
+    const rows = [['วันที่', 'เวลา', 'ประเภท', 'หมวดหมู่', 'จำนวนเงิน', 'บันทึก']];
+    const sorted = [...txs].sort((a, b) => a.date.localeCompare(b.date) || (a.time || '').localeCompare(b.time || ''));
     for (const t of sorted) {
-      rows.push([t.date, t.type === 'income' ? 'รายรับ' : 'รายจ่าย', categoryName(t.categoryId), t.amount.toFixed(2), t.note || '']);
+      rows.push([t.date, t.time || '', t.type === 'income' ? 'รายรับ' : 'รายจ่าย', categoryName(t.categoryId), t.amount.toFixed(2), t.note || '']);
     }
     return '﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\n');
   }
@@ -179,6 +236,7 @@
     uid, uuid, pad, toISODate, parseISODate, daysInMonth, formatMoney, formatSigned, formatNumber, formatCompact,
     monthLabel, monthShort, yearLabel, dayLabel, parseAmount, filterByMonth, filterByYear, totals, byCategory,
     byDay, byMonth, groupByDate, percentChange, toCSV, escapeHTML, round2,
+    nowHHMM, TIME_BUCKETS, timeBucket, byTimeOfDay, planTotals, planByCategory,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

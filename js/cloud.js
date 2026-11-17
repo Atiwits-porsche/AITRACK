@@ -22,6 +22,8 @@
   let retryTimer = null;
   let status = 'local';
   let lastError = null;
+  /** Columns added in later schema versions that this database does not have yet (see supabase/schema.sql). */
+  const missingColumns = new Set();
   const statusListeners = new Set();
   const remoteListeners = new Set();
   const authListeners = new Set();
@@ -61,15 +63,35 @@
   function toRow(t) {
     return {
       user_id: user.id, id: t.id, type: t.type, amount: t.amount, category_id: t.categoryId || '',
-      date: t.date, note: t.note || '', created_at: new Date(t.createdAt || Date.now()).toISOString(),
+      date: t.date, time_of_day: t.time || '', note: t.note || '', created_at: new Date(t.createdAt || Date.now()).toISOString(),
       updated_at: new Date().toISOString(),
     };
   }
   function fromRow(r) {
-    return { id: r.id, type: r.type, amount: Number(r.amount), categoryId: r.category_id, date: r.date, note: r.note || '', createdAt: Date.parse(r.created_at) || 0 };
+    return {
+      id: r.id, type: r.type, amount: Number(r.amount), categoryId: r.category_id, date: r.date,
+      // undefined (column missing on the server) keeps the time stored on this device
+      time: r.time_of_day === undefined ? undefined : (r.time_of_day || ''),
+      note: r.note || '', createdAt: Date.parse(r.created_at) || 0,
+    };
   }
   function settingsRow() {
-    return { user_id: user.id, categories: S.categories, budget: S.settings.budget || 0, updated_at: new Date().toISOString() };
+    return { user_id: user.id, categories: S.categories, budget: S.settings.budget || 0, plan: S.settings.plan, updated_at: new Date().toISOString() };
+  }
+
+  /**
+   * Upsert that still works against a database created before a column was added:
+   * PostgREST answers PGRST204 "Could not find the 'x' column", so drop that field and retry.
+   */
+  async function upsertCompat(table, rows, opts) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const strip = (r) => { const o = { ...r }; missingColumns.forEach((c) => delete o[c]); return o; };
+      const res = await client.from(table).upsert(Array.isArray(rows) ? rows.map(strip) : strip(rows), opts);
+      const m = res && res.error && /could not find the '([^']+)' column/i.exec(res.error.message || '');
+      if (m && !missingColumns.has(m[1])) { missingColumns.add(m[1]); continue; }
+      return check(res);
+    }
+    return null;
   }
 
   /* ---------- write queue (persisted, coalesced) ---------- */
@@ -124,13 +146,13 @@
       const ups = Object.entries(queue.upserts);
       for (let i = 0; i < ups.length; i += CHUNK) {
         const part = ups.slice(i, i + CHUNK);
-        check(await client.from('transactions').upsert(part.map(([, e]) => toRow(e.tx)), { onConflict: 'user_id,id' }));
+        await upsertCompat('transactions', part.map(([, e]) => toRow(e.tx)), { onConflict: 'user_id,id' });
         for (const [id, e] of part) if (queue.upserts[id] === e) delete queue.upserts[id];
         persistQueue();
       }
       if (queue.settings) {
         const v = queue.settings;
-        check(await client.from('user_settings').upsert(settingsRow(), { onConflict: 'user_id' }));
+        await upsertCompat('user_settings', settingsRow(), { onConflict: 'user_id' });
         if (queue.settings === v) queue.settings = 0;
         persistQueue();
       }
@@ -262,6 +284,8 @@
     get status() { return status; },
     get lastError() { return lastError; },
     pendingCount,
+    /** Names of columns the connected database is missing (run supabase/schema.sql again to add them). */
+    get missingColumns() { return [...missingColumns]; },
     get localModeChosen() { return ls(MODE_KEY) === 'local'; },
     /** Show the sign-in screen? */
     get needsLogin() { return !!config && !!client && !user && ls(MODE_KEY) !== 'local'; },

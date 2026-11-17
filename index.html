@@ -16,6 +16,7 @@
     <a class="brand" href="#/"><span class="brand-mark">฿</span><span>AITRACK</span></a>
     <nav class="nav" aria-label="เมนูหลัก">
       <a href="#/" data-route="home"><span class="nav-ico">🧾</span><span>รายการ</span></a>
+      <a href="#/categories" data-route="categories"><span class="nav-ico">🗂️</span><span>หมวดหมู่</span></a>
       <a href="#/summary" data-route="summary"><span class="nav-ico">📊</span><span>สรุปเดือน</span></a>
       <a href="#/year" data-route="year"><span class="nav-ico">📅</span><span>สรุปปี</span></a>
       <a href="#/settings" data-route="settings"><span class="nav-ico">⚙️</span><span>ตั้งค่า</span></a>
@@ -42,8 +43,10 @@
       <div id="fCats" class="cat-grid"></div>
       <div class="row2">
         <label class="field"><span class="field-label">วันที่</span><input type="date" id="fDate"></label>
-        <label class="field"><span class="field-label">บันทึกช่วยจำ</span><input id="fNote" maxlength="120" placeholder="เช่น ข้าวมันไก่"></label>
+        <label class="field"><span class="field-label">เวลา</span><input type="time" id="fTime"></label>
       </div>
+      <label class="field"><span class="field-label">บันทึกช่วยจำ</span><input id="fNote" maxlength="120" placeholder="เช่น ข้าวมันไก่ ร้านป้าแดง"></label>
+      <div id="fChips" class="note-chips" aria-label="ข้อความด่วน"></div>
       <p id="fErr" class="error" role="alert"></p>
       <div class="dialog-actions">
         <button type="button" id="fDelete" class="btn danger">ลบ</button>

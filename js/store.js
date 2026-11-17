@@ -9,13 +9,13 @@
 
   const DEFAULT_CATEGORIES = {
     expense: [
-      { id: 'food', name: 'อาหาร', icon: '🍜' },
-      { id: 'transport', name: 'เดินทาง', icon: '🚗' },
-      { id: 'home', name: 'ที่พัก/ค่าเช่า', icon: '🏠' },
+      { id: 'food', name: 'ค่ากิน', icon: '🍜' },
+      { id: 'transport', name: 'ค่าเดินทาง', icon: '🚗' },
+      { id: 'home', name: 'ค่าห้อง/ที่พัก', icon: '🏠' },
       { id: 'bills', name: 'ค่าน้ำ/ไฟ/เน็ต', icon: '💡' },
       { id: 'shopping', name: 'ช้อปปิ้ง', icon: '🛍️' },
       { id: 'health', name: 'สุขภาพ', icon: '💊' },
-      { id: 'fun', name: 'บันเทิง', icon: '🎬' },
+      { id: 'fun', name: 'ค่าบันเทิง', icon: '🎬' },
       { id: 'other-exp', name: 'อื่นๆ', icon: '📦', other: true },
     ],
     income: [
@@ -27,25 +27,46 @@
     ],
   };
 
+  // Earlier default names, renamed to everyday words. Only untouched defaults are renamed.
+  const RENAMED_DEFAULTS = { food: ['อาหาร', 'ค่ากิน'], transport: ['เดินทาง', 'ค่าเดินทาง'], home: ['ที่พัก/ค่าเช่า', 'ค่าห้อง/ที่พัก'], fun: ['บันเทิง', 'ค่าบันเทิง'] };
+
   const clone = (o) => JSON.parse(JSON.stringify(o));
+  const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
   function fresh() {
-    return { version: 1, transactions: [], categories: clone(DEFAULT_CATEGORIES), settings: { budget: 0 } };
+    return { version: 1, transactions: [], categories: clone(DEFAULT_CATEGORIES), settings: { budget: 0, plan: { items: [] } } };
+  }
+
+  /** Monthly plan: [{id, kind: 'income'|'fixed'|'budget', categoryId, amount, label}] */
+  function normPlan(p) {
+    const items = p && Array.isArray(p.items) ? p.items : [];
+    return {
+      items: items
+        .filter((i) => i && ['income', 'fixed', 'budget'].includes(i.kind) && i.categoryId && Number(i.amount) > 0)
+        .map((i) => ({ id: String(i.id || U.uid()), kind: i.kind, categoryId: String(i.categoryId), amount: U.round2(Number(i.amount)), label: String(i.label || '').slice(0, 40) })),
+    };
+  }
+
+  function normSettings(st) {
+    const out = { budget: Math.max(0, Number(st && st.budget) || 0), plan: normPlan(st && st.plan) };
+    return out;
   }
 
   function normTx(t) {
     if (!t || !/^\d{4}-\d{2}-\d{2}$/.test(t.date) || (t.type !== 'income' && t.type !== 'expense') || !(Number(t.amount) > 0)) return null;
     return {
       id: String(t.id || U.uid()), type: t.type, amount: U.round2(Number(t.amount)),
-      categoryId: String(t.categoryId || ''), date: t.date, note: String(t.note || ''), createdAt: Number(t.createdAt) || 0,
+      categoryId: String(t.categoryId || ''), date: t.date, time: TIME_RE.test(t.time || '') ? t.time : '',
+      note: String(t.note || ''), createdAt: Number(t.createdAt) || 0,
     };
   }
 
   function normCategories(c) {
     const base = DEFAULT_CATEGORIES;
     const ok = (list) => Array.isArray(list) && list.length && list.every((x) => x && x.id && x.name);
+    const rename = (x) => (RENAMED_DEFAULTS[x.id] && x.name === RENAMED_DEFAULTS[x.id][0] ? { ...x, name: RENAMED_DEFAULTS[x.id][1] } : x);
     return {
-      expense: ok(c && c.expense) ? c.expense : clone(base.expense),
+      expense: ok(c && c.expense) ? c.expense.map(rename) : clone(base.expense),
       income: ok(c && c.income) ? c.income : clone(base.income),
     };
   }
@@ -57,7 +78,7 @@
       version: 1,
       transactions: Array.isArray(d.transactions) ? d.transactions.map(normTx).filter(Boolean) : [],
       categories: normCategories(d.categories),
-      settings: Object.assign(base.settings, d.settings || {}),
+      settings: normSettings(d.settings),
     };
   }
 
@@ -91,6 +112,8 @@
     get transactions() { return data.transactions; },
     get categories() { return data.categories; },
     get settings() { return data.settings; },
+    /** Monthly plan items (salary, fixed costs, per-category budgets). */
+    get plan() { return data.settings.plan.items; },
 
     /** Switch which localStorage cache is active (local mode vs. a signed-in user's cache). */
     useNamespace(k) { key = k || LOCAL_KEY; data = read(key); listeners.forEach((fn) => fn()); },
@@ -157,6 +180,20 @@
 
     setBudget(v) { data.settings.budget = Math.max(0, Number(v) || 0); save(); settingsChanged(); },
 
+    setPlan(items) { data.settings.plan = normPlan({ items }); save(); settingsChanged(); },
+    /** Fixed id for "salary / rent of this month", so recording twice (or on two devices) never duplicates. */
+    planTxId(itemId, year, month) { return `plan-${itemId}-${year}-${U.pad(month + 1)}`; },
+    planTx(itemId, year, month) { const id = Store.planTxId(itemId, year, month); return data.transactions.find((t) => t.id === id) || null; },
+    recordPlanItem(item, year, month, date) {
+      const existing = Store.planTx(item.id, year, month);
+      if (existing) return existing;
+      const cat = Store.getCategory(item.categoryId);
+      return Store.addTransaction({
+        id: Store.planTxId(item.id, year, month), type: item.kind === 'income' ? 'income' : 'expense',
+        amount: item.amount, categoryId: item.categoryId, date, time: '', note: item.label || (cat ? cat.name : ''),
+      });
+    },
+
     exportJSON() { return JSON.stringify(data, null, 2); },
     importJSON(text) {
       const parsed = JSON.parse(text);
@@ -196,23 +233,22 @@
         added++;
       }
       if (!data.settings.budget && other.settings.budget) data.settings.budget = other.settings.budget;
+      if (!data.settings.plan.items.length && other.settings.plan && other.settings.plan.items.length) data.settings.plan = normPlan(other.settings.plan);
       save(); settingsChanged();
       return added;
     },
 
     /* ----- applied by the sync layer (never re-emitted) ----- */
     replaceFromRemote(transactions, settingsRow) {
-      data.transactions = transactions.map(normTx).filter(Boolean);
-      if (settingsRow) {
-        data.categories = normCategories(settingsRow.categories);
-        data.settings.budget = Number(settingsRow.budget) || 0;
-      }
+      const old = new Map(data.transactions.map((t) => [t.id, t]));
+      data.transactions = transactions.map((t) => normTx(t.time === undefined && old.has(t.id) ? { ...t, time: old.get(t.id).time } : t)).filter(Boolean);
+      if (settingsRow) Store.applyRemoteSettings(settingsRow, true);
       save();
     },
     applyRemoteUpsert(tx) {
-      const t = normTx(tx);
+      const i = data.transactions.findIndex((x) => x.id === tx.id);
+      const t = normTx(tx.time === undefined && i >= 0 ? { ...tx, time: data.transactions[i].time } : tx);
       if (!t) return;
-      const i = data.transactions.findIndex((x) => x.id === t.id);
       if (i >= 0) data.transactions[i] = t; else data.transactions.push(t);
       save();
     },
@@ -220,41 +256,58 @@
       const i = data.transactions.findIndex((x) => x.id === id);
       if (i >= 0) { data.transactions.splice(i, 1); save(); }
     },
-    applyRemoteSettings(row) {
+    applyRemoteSettings(row, noSave) {
       data.categories = normCategories(row.categories);
       data.settings.budget = Number(row.budget) || 0;
-      save();
+      // Older databases have no plan column yet: keep the plan stored on this device.
+      if (row.plan !== undefined && row.plan !== null) data.settings.plan = normPlan(row.plan);
+      if (!noSave) save();
     },
 
     loadSample() {
       const now = new Date();
       const rand = (a, b) => Math.round((a + Math.random() * (b - a)) / 5) * 5;
-      const notes = { food: ['ข้าวกลางวัน', 'กาแฟ', 'มื้อเย็น', 'ซื้อของสด'], transport: ['BTS', 'เติมน้ำมัน', 'แท็กซี่'], shopping: ['เสื้อผ้า', 'ของใช้ในบ้าน'], fun: ['ดูหนัง', 'Netflix'], health: ['ร้านยา'] };
+      const notes = { food: ['มื้อกลางวัน', 'กาแฟ', 'มื้อเย็น', 'มื้อเช้า'], transport: ['BTS', 'เติมน้ำมัน', 'แท็กซี่'], shopping: ['เสื้อผ้า', 'ของใช้ในบ้าน'], fun: ['ดูหนัง', 'Netflix'], health: ['ร้านยา'] };
+      const foodTimes = ['12:15', '09:40', '19:05', '07:30'];
       const has = (id) => !!Store.getCategory(id);
+      if (!data.settings.plan.items.length) {
+        data.settings.plan = normPlan({ items: [
+          { id: 'sample-salary', kind: 'income', categoryId: 'salary', amount: 35000, label: 'เงินเดือน' },
+          { id: 'sample-rent', kind: 'fixed', categoryId: 'home', amount: 8500, label: 'ค่าห้อง' },
+          { id: 'sample-bills', kind: 'fixed', categoryId: 'bills', amount: 1500, label: 'ค่าน้ำ/ไฟ/เน็ต' },
+          { id: 'sample-food', kind: 'budget', categoryId: 'food', amount: 6000 },
+          { id: 'sample-transport', kind: 'budget', categoryId: 'transport', amount: 2500 },
+          { id: 'sample-fun', kind: 'budget', categoryId: 'fun', amount: 1500 },
+        ].filter((i) => has(i.categoryId)) });
+        settingsChanged();
+      }
+      const planItem = (id) => data.settings.plan.items.find((i) => i.id === id);
       for (let back = 5; back >= 0; back--) {
         const y = new Date(now.getFullYear(), now.getMonth() - back, 1);
         const yr = y.getFullYear(), mo = y.getMonth();
         const lastDay = back === 0 ? now.getDate() : U.daysInMonth(yr, mo);
         const d = (day) => U.toISODate(new Date(yr, mo, Math.min(day, lastDay)));
-        const push = (type, categoryId, amount, day, note) => {
+        const push = (type, categoryId, amount, day, note, time, id) => {
           if (!has(categoryId)) categoryId = (data.categories[type].find((c) => c.other) || data.categories[type][0]).id;
-          const t = { id: U.uuid(), createdAt: Date.now(), type, categoryId, amount, date: d(day), note: note || '' };
+          if (id && data.transactions.some((x) => x.id === id)) return;
+          const t = { id: id || U.uuid(), createdAt: Date.now(), type, categoryId, amount, date: d(day), time: time || '', note: note || '' };
           data.transactions.push(t);
           emit({ kind: 'upsert', tx: t });
         };
-        push('income', 'salary', 35000, 1, 'เงินเดือน');
-        if (Math.random() > 0.5) push('income', 'freelance', rand(2000, 8000), 15, 'งานออกแบบ');
-        push('expense', 'home', 8500, 1, 'ค่าเช่าห้อง');
-        push('expense', 'bills', rand(900, 1600), 5, 'ค่าไฟ + เน็ต');
+        const planId = (id) => (planItem(id) ? Store.planTxId(id, yr, mo) : null);
+        push('income', 'salary', 35000, 1, 'เงินเดือน', '', planId('sample-salary'));
+        if (Math.random() > 0.5) push('income', 'freelance', rand(2000, 8000), 15, 'งานออกแบบ', '18:20');
+        push('expense', 'home', 8500, 1, 'ค่าห้อง', '', planId('sample-rent'));
+        if (back > 0 || lastDay >= 5) push('expense', 'bills', rand(900, 1600), 5, 'ค่าน้ำ/ไฟ/เน็ต', '', planId('sample-bills'));
         for (let day = 1; day <= lastDay; day++) {
-          push('expense', 'food', rand(80, 350), day, notes.food[day % 4]);
-          if (day % 2 === 0) push('expense', 'transport', rand(40, 300), day, notes.transport[day % 3]);
-          if (day % 9 === 0) push('expense', 'shopping', rand(300, 2500), day, notes.shopping[day % 2]);
-          if (day % 11 === 0) push('expense', 'fun', rand(200, 800), day, notes.fun[day % 2]);
-          if (day % 17 === 0) push('expense', 'health', rand(100, 600), day, notes.health[0]);
+          push('expense', 'food', rand(40, 220), day, notes.food[day % 4], foodTimes[day % 4]);
+          if (day % 3 !== 0) push('expense', 'food', rand(50, 120), day, notes.food[(day + 1) % 4], foodTimes[(day + 1) % 4]);
+          if (day % 2 === 0) push('expense', 'transport', rand(40, 300), day, notes.transport[day % 3], '08:10');
+          if (day % 9 === 0) push('expense', 'shopping', rand(300, 2500), day, notes.shopping[day % 2], '15:30');
+          if (day % 11 === 0) push('expense', 'fun', rand(200, 800), day, notes.fun[day % 2], '20:45');
+          if (day % 17 === 0) push('expense', 'health', rand(100, 600), day, notes.health[0], '10:20');
         }
       }
-      if (!data.settings.budget) { data.settings.budget = 25000; settingsChanged(); }
       save();
     },
   };
