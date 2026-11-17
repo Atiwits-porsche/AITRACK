@@ -8,6 +8,6 @@
  * NEVER put the service_role / secret key here.
  */
 window.AITRACK_CONFIG = {
-  supabaseUrl: '',      // e.g. 'https://abcdefghijkl.supabase.co'
-  supabaseAnonKey: '',  // Project Settings → API Keys → anon / publishable key
+  supabaseUrl: 'https://qddupexksvxbcqopdvpp.supabase.co',
+  supabaseAnonKey: 'sb_publishable_vcUcJ9E4rPlH-y6AZSEgfQ_KxlhbjgS', // publishable key (safe to expose)
 };
