@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AITRACK · รายรับรายจ่าย</title>
+  <meta name="description" content="บันทึกรายรับรายจ่ายและสรุปรายเดือน">
+  <meta name="theme-color" content="#0f766e">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/"><span class="brand-mark">฿</span><span>AITRACK</span></a>
+    <nav class="nav" aria-label="เมนูหลัก">
+      <a href="#/" data-route="home"><span class="nav-ico">🧾</span><span>รายการ</span></a>
+      <a href="#/summary" data-route="summary"><span class="nav-ico">📊</span><span>สรุปเดือน</span></a>
+      <a href="#/year" data-route="year"><span class="nav-ico">📅</span><span>สรุปปี</span></a>
+      <a href="#/settings" data-route="settings"><span class="nav-ico">⚙️</span><span>ตั้งค่า</span></a>
+    </nav>
+  </header>
+
+  <main id="view" class="container"></main>
+
+  <button id="addBtn" class="fab" aria-label="บันทึกรายการใหม่" title="บันทึกรายการใหม่ (N)"><span>+</span><span class="fab-label">บันทึก</span></button>
+
+  <dialog id="txDialog" aria-labelledby="txTitle">
+    <form id="txForm" novalidate>
+      <h2 id="txTitle">บันทึกรายการใหม่</h2>
+      <div class="seg type-toggle">
+        <button type="button" data-ftype="expense">รายจ่าย</button>
+        <button type="button" data-ftype="income">รายรับ</button>
+      </div>
+      <label class="amount-field">
+        <span class="currency">฿</span>
+        <input id="fAmount" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="จำนวนเงิน">
+      </label>
+      <div class="field-label">หมวดหมู่</div>
+      <div id="fCats" class="cat-grid"></div>
+      <div class="row2">
+        <label class="field"><span class="field-label">วันที่</span><input type="date" id="fDate"></label>
+        <label class="field"><span class="field-label">บันทึกช่วยจำ</span><input id="fNote" maxlength="120" placeholder="เช่น ข้าวมันไก่"></label>
+      </div>
+      <p id="fErr" class="error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" id="fDelete" class="btn danger">ลบ</button>
+        <span class="spacer"></span>
+        <button type="button" id="fCancel" class="btn ghost">ยกเลิก</button>
+        <button type="submit" class="btn primary">บันทึก</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="tip" class="tooltip" role="tooltip" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/utils.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

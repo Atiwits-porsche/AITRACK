@@ -1,0 +1,14 @@
+{
+  "name": "AITRACK – รายรับรายจ่าย",
+  "short_name": "AITRACK",
+  "description": "บันทึกรายรับรายจ่ายและสรุปรายเดือน",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f6f3",
+  "theme_color": "#0f766e",
+  "lang": "th",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
