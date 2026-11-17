@@ -452,6 +452,26 @@ body.auth-mode { padding-bottom: 24px; }
 code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; font-size: .88em; }
 
 /* ---------- Print ---------- */
+/* Summary period tabs (month / quarter / year) */
+.sub-tabs { display: inline-flex; background: var(--surface-2); border-radius: 12px; padding: 3px; gap: 2px; margin: 4px 0 4px; }
+.sub-tabs a { padding: 7px 14px; border-radius: 9px; color: var(--text-2); font-weight: 500; text-decoration: none; }
+.sub-tabs a[aria-current="page"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.h1-sub { display: block; font-size: .8rem; font-weight: 500; color: var(--text-2); margin-top: 2px; }
+.cell-sub { display: block; }
+.span-note { margin: -6px 0 14px; }
+.table tr.current td { background: var(--primary-soft); }
+.grid-2.flat { margin-bottom: 0; align-items: center; }
+
+/* Analysis findings: status color is always paired with an icon and words */
+.insights { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 8px; }
+.insights li { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border-left: 4px solid var(--muted); }
+.insights li.good { border-left-color: var(--good); }
+.insights li.warning { border-left-color: var(--warning); }
+.insights li.critical { border-left-color: var(--critical); }
+.insights li.info { border-left-color: var(--primary); }
+.ins-icon { font-size: 1.15rem; line-height: 1.4; flex: none; }
+.insights b { font-weight: 600; }
+
 @media print {
   :root { color-scheme: light; }
   body { background: #fff; padding: 0; }

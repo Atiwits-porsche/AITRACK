@@ -146,3 +146,56 @@ test('findSampleIds: marked ids and an old unmarked sample burst, never hand-ent
   const imported = Array.from({ length: 40 }, (_, i) => ({ id: 'r' + i, note: 'ร้าน ' + i, createdAt: t0 + i }));
   assert.equal(U.findSampleIds(imported).size, 0);
 });
+
+const tx = (date, amount, categoryId, extra) => ({ id: U.uid(), type: 'expense', amount, categoryId, date, time: '', note: '', createdAt: 1, ...extra });
+
+test('quarters: filter, totals, labels and shifting across years', () => {
+  const txs = [tx('2026-01-05', 100, 'food'), tx('2026-03-31', 50, 'food'), tx('2026-04-01', 70, 'food'),
+    { ...tx('2026-02-01', 1000, 'salary'), type: 'income' }, tx('2025-12-31', 9, 'food')];
+  assert.equal(U.filterByQuarter(txs, 2026, 0).length, 3);
+  const q = U.byQuarter(txs, 2026);
+  assert.deepEqual([q[0].income, q[0].expense, q[0].net, q[1].expense, q[2].count], [1000, 150, 850, 70, 0]);
+  assert.deepEqual(U.shiftQuarter(2026, 0, -1), { year: 2025, q: 3 });
+  assert.deepEqual(U.shiftQuarter(2025, 3, 1), { year: 2026, q: 0 });
+  assert.equal(U.quarterOf(11), 3);
+  assert.match(U.quarterLabel(2026, 3), /^ไตรมาส 4 /);
+});
+
+test('monthSeries crosses the year boundary', () => {
+  const s = U.monthSeries([tx('2025-12-10', 10, 'food'), tx('2026-01-10', 20, 'food')], 2026, 1, 3);
+  assert.deepEqual(s.map((m) => [m.year, m.month, m.expense]), [[2025, 11, 10], [2026, 0, 20], [2026, 1, 0]]);
+});
+
+test('byWeekday averages per weekday that occurs in the range, Monday first', () => {
+  // 2026-11-02 is a Monday; range is two full weeks.
+  const rows = U.byWeekday([tx('2026-11-02', 100, 'food'), tx('2026-11-09', 300, 'food'), tx('2026-11-08', 50, 'food')], '2026-11-02', '2026-11-15');
+  assert.equal(rows[0].label, 'จ.');
+  assert.deepEqual([rows[0].total, rows[0].days, rows[0].avg], [400, 2, 200]);
+  assert.deepEqual([rows[6].label, rows[6].avg], ['อา.', 25]);
+});
+
+test('frequentNotes groups by note, skips plan entries and one-offs', () => {
+  const txs = [tx('2026-11-01', 60, 'food', { note: 'กาแฟ' }), tx('2026-11-02', 40, 'food', { note: 'กาแฟ ' }),
+    tx('2026-11-03', 500, 'fun', { note: 'ดูหนัง' }), tx('2026-11-01', 5000, 'home', { id: 'plan-x-2026-11', note: 'ค่าห้อง' }),
+    tx('2026-11-02', 5000, 'home', { id: 'plan-x-2026-10', note: 'ค่าห้อง' })];
+  assert.deepEqual(U.frequentNotes(txs), [{ note: 'กาแฟ', count: 2, total: 100, avg: 50, categoryId: 'food' }]);
+});
+
+test('categoryVsAverage compares the same part of each month', () => {
+  const txs = [tx('2026-09-05', 100, 'food'), tx('2026-09-25', 900, 'food'), tx('2026-10-05', 300, 'food'), tx('2026-11-04', 400, 'food')];
+  const r = U.categoryVsAverage(txs, 2026, 10, 3, 10);
+  assert.equal(r.months, 2);
+  assert.deepEqual(r.rows[0], { categoryId: 'food', curr: 400, avg: 200, diff: 200, pct: 100 });
+});
+
+test('projectMonth counts plan entries once and extends everyday spending', () => {
+  const txs = [tx('2026-11-01', 5000, 'home', { id: 'plan-rent-2026-11' }), tx('2026-11-03', 300, 'food'), tx('2026-11-09', 300, 'food')];
+  const p = U.projectMonth(txs, 2026, 10, 10);
+  assert.deepEqual([p.spent, p.everyday, p.projected, p.days], [5600, 600, 5600 + 60 * 20, 30]);
+  assert.equal(U.noSpendDays(txs, 2026, 10, 10), 7);
+});
+
+test('cutQuarter keeps the same span of a quarter', () => {
+  const txs = [tx('2026-07-31', 1, 'a'), tx('2026-08-17', 2, 'a'), tx('2026-08-18', 4, 'a'), tx('2026-09-01', 8, 'a')];
+  assert.deepEqual(U.cutQuarter(txs, 1, 17).map((t) => t.amount), [1, 2]);
+});
