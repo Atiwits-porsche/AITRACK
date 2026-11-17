@@ -16,14 +16,21 @@
 
   const view = $('#view');
   let pendingRender = false;
-  const ROUTES = { home: renderHome, summary: renderSummary, year: renderYear, settings: renderSettings };
+  let planDraft = null;
+  const ROUTES = { home: renderHome, categories: renderCategories, summary: renderSummary, year: renderYear, plan: renderPlan, settings: renderSettings };
+  let routeParam = null;
 
   /* ---------- helpers ---------- */
 
+  /** "#/categories/food" → route "categories", routeParam "food" */
   function currentRoute() {
-    const r = location.hash.replace(/^#\/?/, '').split('?')[0];
-    return ROUTES[r] ? r : 'home';
+    const parts = location.hash.replace(/^#\/?/, '').split('?')[0].split('/');
+    routeParam = parts[1] ? decodeURIComponent(parts[1]) : null;
+    return ROUTES[parts[0]] ? parts[0] : 'home';
   }
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
 
   function render() {
     pendingRender = false;
@@ -31,7 +38,9 @@
     paintSyncBadge();
     if (Cloud.needsLogin) { renderAuth(); hideTip(); return; }
     const r = currentRoute();
-    document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === r));
+    if (r !== 'plan') planDraft = null;
+    const navRoute = r === 'plan' ? 'categories' : r;
+    document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === navRoute));
     ROUTES[r]();
     hideTip();
   }
@@ -99,6 +108,8 @@
         ${stat('คงเหลือ', `<span class="${moneyCls(t.net)}">${U.formatSigned(t.net)}</span>`, 'net')}
       </div>
       ${budgetBlock(t.expense)}
+      ${planCta()}
+      ${planChecklist(true)}
       <div class="toolbar">
         <div class="seg" role="tablist">
           ${[['all', 'ทั้งหมด'], ['income', 'รายรับ'], ['expense', 'รายจ่าย']].map(([k, l]) =>
@@ -121,20 +132,79 @@
     </div>`;
   }
 
+  /** Spent vs. planned: status color is always paired with an icon and words. */
+  function budgetStatus(spent, planned) {
+    const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
+    const left = U.round2(planned - spent);
+    if (left < 0) return { pct, left, status: 'critical', icon: '⛔', msg: `เกินงบ ${U.formatMoney(-left)}` };
+    if (pct >= 80) return { pct, left, status: 'warning', icon: '⚠️', msg: `ใกล้เต็มงบ เหลือ ${U.formatMoney(left)}` };
+    return { pct, left, status: 'good', icon: '✅', msg: `เหลือ ${U.formatMoney(left)}` };
+  }
+
+  /** Like budgetStatus, but a category planned only as a fixed cost is "done" once paid, not "almost over budget". */
+  function planStatus(spent, planned) {
+    const st = budgetStatus(spent, planned.total);
+    if (planned.budget) return st;
+    if (spent <= 0) return { ...st, status: 'good', icon: '⏳', msg: `ยังไม่จ่าย ${U.formatMoney(planned.total)}` };
+    if (spent < planned.total) return { ...st, status: 'good', icon: '⏳', msg: `จ่ายแล้วบางส่วน ยังขาด ${U.formatMoney(planned.total - spent)}` };
+    if (spent > planned.total) return { ...st, status: 'warning', icon: '⚠️', msg: `จ่ายแล้ว สูงกว่าแผน ${U.formatMoney(spent - planned.total)}` };
+    return { ...st, status: 'good', icon: '✅', msg: 'จ่ายแล้ว' };
+  }
+
+  function meter(st, label) {
+    return `<div class="meter" role="progressbar" aria-label="${esc(label || 'สัดส่วนที่ใช้ไป')}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${st.pct.toFixed(0)}"><div class="meter-fill ${st.status}" style="width:${st.pct}%"></div></div>`;
+  }
+
+  /** Monthly budget: the one set in Settings, otherwise the plan's fixed costs + category budgets. */
+  function effectiveBudget() { return S.settings.budget || U.planTotals(S.plan).expense; }
+
   function budgetBlock(spent) {
-    const budget = S.settings.budget;
+    const budget = effectiveBudget();
     if (!budget) return '';
-    const pct = Math.min(100, (spent / budget) * 100);
-    const left = budget - spent;
-    let status, icon, msg;
-    if (left < 0) { status = 'critical'; icon = '⛔'; msg = `เกินงบ ${U.formatMoney(-left)}`; }
-    else if (pct >= 80) { status = 'warning'; icon = '⚠️'; msg = `ใกล้เต็มงบ เหลือ ${U.formatMoney(left)}`; }
-    else { status = 'good'; icon = '✅'; msg = `เหลือ ${U.formatMoney(left)}`; }
-    return `<div class="card budget">
+    const st = budgetStatus(spent, budget);
+    return `<a class="card budget card-link" href="#/categories">
       <div class="budget-head"><span>งบรายจ่ายเดือนนี้</span><span class="muted">${U.formatMoney(spent)} / ${U.formatMoney(budget)}</span></div>
-      <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct.toFixed(0)}"><div class="meter-fill ${status}" style="width:${pct}%"></div></div>
-      <div class="budget-msg">${icon} ${msg}</div>
+      ${meter(st, 'งบรายจ่ายเดือนนี้')}
+      <div class="budget-msg">${st.icon} ${st.msg} <span class="muted small">· ดูแยกหมวด ›</span></div>
+    </a>`;
+  }
+
+  /* ---------- Monthly plan: CTA + recurring checklist ---------- */
+
+  function planCta() {
+    if (S.plan.length || lsGet('aitrack.planCtaDismissed')) return '';
+    return `<div class="card banner plan-cta">
+      <div><b>💡 ตั้งเงินเดือนและค่าใช้จ่ายประจำ</b>
+        <div class="muted small">เช่น เงินเดือน 20,000 · ค่าห้อง 5,000 · ค่ากิน 3,000 แล้วดูว่าแต่ละหมวดใช้ไปเท่าไหร่ เหลือเท่าไหร่</div></div>
+      <div class="btn-row"><a class="btn primary" href="#/plan">ตั้งแผนรายเดือน</a><button class="btn ghost" data-act="dismiss-plan-cta">ไว้ทีหลัง</button></div>
     </div>`;
+  }
+
+  /** Salary and fixed costs of the viewed month, each recordable with one tap. compact = only what is still pending. */
+  function planChecklist(compact) {
+    const items = S.plan.filter((i) => i.kind !== 'budget');
+    if (!items.length) return '';
+    const rows = items.map((i) => ({ i, tx: S.planTx(i.id, state.year, state.month) }));
+    const pending = rows.filter((r) => !r.tx);
+    if (compact && !pending.length) return '';
+    const shown = compact ? pending : rows;
+    return `<section class="card checklist">
+      <div class="card-head"><h2>รายการประจำเดือน</h2><span class="muted small">บันทึกแล้ว ${rows.length - pending.length}/${rows.length}</span></div>
+      <ul class="check-list">${shown.map(({ i, tx }) => {
+        const cat = S.getCategory(i.categoryId);
+        const label = i.label || catName(i.categoryId);
+        const kindLabel = i.kind === 'income' ? 'รายรับประจำ' : 'ค่าใช้จ่ายคงที่';
+        return `<li class="${tx ? 'done' : ''}">
+          <span class="tx-icon" style="--cat:${catColor(cat)}">${esc(catIcon(i.categoryId))}</span>
+          <span class="tx-main"><span class="tx-cat">${esc(label)}</span>
+            <span class="tx-note">${kindLabel}${tx ? ` · บันทึกแล้ว ${esc(U.dayLabel(tx.date))}` : ''}</span></span>
+          <span class="tx-amt">${U.formatMoney(tx ? tx.amount : i.amount)}</span>
+          ${tx ? `<button class="done-mark" data-act="edit-tx" data-id="${esc(tx.id)}" aria-label="แก้ไข ${esc(label)}">✓</button>`
+            : `<button class="btn btn-sm primary" data-act="plan-record" data-id="${esc(i.id)}">${i.kind === 'income' ? 'ได้รับแล้ว' : 'จ่ายแล้ว'}</button>`}
+        </li>`;
+      }).join('')}</ul>
+      ${pending.length > 1 ? '<button class="btn btn-sm" data-act="plan-record-all">✓ บันทึกที่เหลือทั้งหมด</button>' : ''}
+    </section>`;
   }
 
   function renderList() {
@@ -153,18 +223,257 @@
     }
     if (!txs.length) { box.innerHTML = '<div class="empty"><p>ไม่พบรายการที่ตรงกับตัวกรอง</p></div>'; return; }
 
-    box.innerHTML = U.groupByDate(txs).map((g) => `
+    box.innerHTML = txGroupsHTML(txs, { showCat: true });
+  }
+
+  /** Entries grouped by day. showCat=false (inside one category) shows the note as the title and a plain day total. */
+  function txGroupsHTML(txs, opts) {
+    return U.groupByDate(txs).map((g) => `
       <section class="day">
-        <header class="day-head"><span>${esc(U.dayLabel(g.date))}</span><span class="${moneyCls(g.net)}">${U.formatSigned(g.net)}</span></header>
-        <ul class="tx-list">
-          ${g.items.map((t) => `
-            <li><button class="tx" data-act="edit-tx" data-id="${esc(t.id)}">
-              <span class="tx-icon" style="--cat:${catColor(S.getCategory(t.categoryId))}">${esc(catIcon(t.categoryId))}</span>
-              <span class="tx-main"><span class="tx-cat">${esc(catName(t.categoryId))}</span>${t.note ? `<span class="tx-note">${esc(t.note)}</span>` : ''}</span>
-              <span class="tx-amt ${t.type === 'income' ? 'pos' : 'neg'}">${t.type === 'income' ? '+' : '−'}${U.formatMoney(t.amount)}</span>
-            </button></li>`).join('')}
-        </ul>
+        <header class="day-head"><span>${esc(U.dayLabel(g.date))}</span>${opts.showCat
+          ? `<span class="${moneyCls(g.net)}">${U.formatSigned(g.net)}</span>`
+          : `<span>รวม ${U.formatMoney(Math.abs(g.net))}</span>`}</header>
+        <ul class="tx-list">${g.items.map((t) => txRowHTML(t, opts)).join('')}</ul>
       </section>`).join('');
+  }
+
+  function txRowHTML(t, opts) {
+    const title = opts.showCat ? catName(t.categoryId) : (t.note || catName(t.categoryId));
+    const sub = [t.time ? `🕒 ${t.time}` : '', opts.showCat ? t.note : ''].filter(Boolean).join(' · ');
+    return `<li><button class="tx" data-act="edit-tx" data-id="${esc(t.id)}">
+      <span class="tx-icon" style="--cat:${catColor(S.getCategory(t.categoryId))}">${esc(catIcon(t.categoryId))}</span>
+      <span class="tx-main"><span class="tx-cat">${esc(title)}</span>${sub ? `<span class="tx-note">${esc(sub)}</span>` : ''}</span>
+      <span class="tx-amt ${t.type === 'income' ? 'pos' : 'neg'}">${t.type === 'income' ? '+' : '−'}${U.formatMoney(t.amount)}</span>
+    </button></li>`;
+  }
+
+  /* ---------- Category overview ---------- */
+
+  function dbNotice() {
+    if (!Cloud.user || !Cloud.missingColumns.length) return '';
+    return `<div class="card notice">⚠️ <b>ฐานข้อมูลยังเป็นเวอร์ชันเก่า</b> — เวลาของรายการและแผนรายเดือนยังไม่ซิงก์ข้ามเครื่อง
+      <div class="small muted">เปิด Supabase → SQL Editor แล้วรันไฟล์ <code>supabase/schema.sql</code> อีกครั้ง (รันซ้ำได้ ไม่กระทบข้อมูลเดิม)</div></div>`;
+  }
+
+  function renderCategories() {
+    if (routeParam) { renderCategoryDetail(routeParam); return; }
+    const txs = U.filterByMonth(S.transactions, state.year, state.month);
+    const t = U.totals(txs);
+    const pt = U.planTotals(S.plan);
+    const planned = U.planByCategory(S.plan);
+    const spentBy = new Map(U.byCategory(txs, 'expense').map((r) => [r.categoryId, r]));
+    const cats = S.categories.expense;
+    const active = cats.filter((c) => spentBy.has(c.id) || planned.has(c.id))
+      .sort((a, b) => ((planned.has(b.id) ? 1 : 0) - (planned.has(a.id) ? 1 : 0)) || ((spentBy.get(b.id) || { total: 0 }).total - (spentBy.get(a.id) || { total: 0 }).total));
+    const idle = cats.filter((c) => !active.includes(c));
+    const unknown = [...spentBy.values()].filter((r) => !S.getCategory(r.categoryId));
+
+    view.innerHTML = `
+      ${dbNotice()}
+      <div class="page-head">${monthSwitcher()}<a class="btn ghost" href="#/plan">✏️ แผนรายเดือน</a></div>
+      ${S.plan.length ? overviewCard(t, pt) : `<div class="card banner plan-cta"><div><b>💡 ยังไม่ได้ตั้งแผนรายเดือน</b>
+          <div class="muted small">กรอกเงินเดือน ค่าห้อง ค่ากิน ฯลฯ เพื่อดูว่าแต่ละหมวดใช้ไปเท่าไหร่ และเหลือเท่าไหร่</div></div>
+          <a class="btn primary" href="#/plan">ตั้งแผนรายเดือน</a></div>`}
+      ${planChecklist(false)}
+      <h2 class="section-title">ใช้จ่ายตามหมวด</h2>
+      ${active.length || unknown.length ? `<div class="cat-cards">${active.map((c) => catCard(c, spentBy.get(c.id), planned.get(c.id), t.expense)).join('')}
+        ${unknown.map((r) => `<div class="cat-card"><div class="cat-card-head"><span class="tx-icon">❔</span><span class="cat-card-name">ไม่ระบุหมวด</span></div><div class="cat-card-amt">${U.formatMoney(r.total)}</div></div>`).join('')}</div>`
+        : '<div class="empty"><div class="empty-icon">🗂️</div><p>ยังไม่มีรายจ่ายในเดือนนี้</p><button class="btn primary" data-act="add">+ บันทึกรายการ</button></div>'}
+      ${idle.length ? `<div class="idle-cats"><span class="muted small">หมวดที่ยังไม่มีรายการ</span>${idle.map((c) => `<a class="chip" href="#/categories/${encodeURIComponent(c.id)}">${esc(c.icon)} ${esc(c.name)}</a>`).join('')}</div>` : ''}
+      <section class="card mt"><h2>รายรับตามหมวด</h2>${categoryTable(U.byCategory(txs, 'income'), t.income, 'income')}</section>`;
+  }
+
+  function overviewCard(t, pt) {
+    const st = budgetStatus(t.expense, pt.expense);
+    return `<section class="card overview">
+      <h2>ภาพรวมเดือนนี้เทียบกับแผน</h2>
+      <div class="ov-grid">
+        <div><span class="ov-label">รายรับ</span><b>${U.formatMoney(t.income)}</b><span class="ov-sub">แผน ${U.formatMoney(pt.income)}</span></div>
+        <div><span class="ov-label">ใช้จ่ายแล้ว</span><b>${U.formatMoney(t.expense)}</b><span class="ov-sub">แผน ${U.formatMoney(pt.expense)}</span></div>
+        <div><span class="ov-label">คงเหลือ</span><b class="${moneyCls(t.net)}">${U.formatSigned(t.net)}</b><span class="ov-sub">ตามแผนเหลือเก็บ ${U.formatMoney(pt.free)}</span></div>
+      </div>
+      ${pt.expense ? `${meter(st, 'รายจ่ายเทียบแผน')}<div class="budget-msg">${st.icon} รายจ่ายรวม${st.msg.startsWith('เกิน') ? '' : 'ตามแผน'} ${st.msg}</div>` : ''}
+    </section>`;
+  }
+
+  function catCard(c, spent, planned, totalExpense) {
+    const amount = spent ? spent.total : 0;
+    const count = spent ? spent.count : 0;
+    let body;
+    if (planned) {
+      const st = planStatus(amount, planned);
+      body = `${meter(st, c.name)}<div class="cat-card-msg">${st.icon} ${st.msg}</div>`;
+    } else {
+      const pct = totalExpense ? (amount / totalExpense) * 100 : 0;
+      body = `<div class="pct-bar"><span style="width:${pct}%;background:${catColor(c)}"></span></div>
+        <div class="cat-card-msg muted">${pct.toFixed(0)}% ของรายจ่าย · ไม่ได้ตั้งงบ</div>`;
+    }
+    return `<a class="cat-card" href="#/categories/${encodeURIComponent(c.id)}">
+      <div class="cat-card-head"><span class="tx-icon" style="--cat:${catColor(c)}">${esc(c.icon)}</span>
+        <span class="cat-card-name">${esc(c.name)}</span><span class="muted small">${count} รายการ ›</span></div>
+      <div class="cat-card-amt">${U.formatMoney(amount)}${planned ? `<span class="muted"> / ${U.formatMoney(planned.total)}</span>` : ''}</div>
+      ${body}
+    </a>`;
+  }
+
+  /* ---------- One category: every entry with date & time ---------- */
+
+  function renderCategoryDetail(id) {
+    const cat = S.getCategory(id);
+    if (!cat) {
+      view.innerHTML = '<div class="empty"><p>ไม่พบหมวดหมู่นี้</p><a class="btn" href="#/categories">‹ กลับไปสรุปหมวดหมู่</a></div>';
+      return;
+    }
+    const type = catType(cat);
+    const inCat = (list) => list.filter((t) => t.categoryId === id);
+    const txs = inCat(U.filterByMonth(S.transactions, state.year, state.month));
+    const total = U.round2(txs.reduce((a, t) => a + t.amount, 0));
+    const prevD = new Date(state.year, state.month - 1, 1);
+    const prevTotal = U.round2(inCat(U.filterByMonth(S.transactions, prevD.getFullYear(), prevD.getMonth())).reduce((a, t) => a + t.amount, 0));
+    const planned = type === 'expense' ? (U.planByCategory(S.plan).get(id) || null) : null;
+    const dim = U.daysInMonth(state.year, state.month);
+    const cur = isCurrentMonth();
+    const future = new Date(state.year, state.month, 1) > today;
+    const elapsed = cur ? today.getDate() : future ? 0 : dim;
+    const daysLeft = cur ? dim - today.getDate() + 1 : 0;
+    const verb = type === 'income' ? 'ได้รับ' : 'ใช้ไป';
+    const st = planned ? planStatus(total, planned) : null;
+
+    let hint = '';
+    if (planned && planned.budget && cur && daysLeft > 0) {
+      hint = st.left >= 0
+        ? `<div class="card hint">💡 เหลือ <b>${U.formatMoney(st.left)}</b> ใช้ได้อีกประมาณ <b>วันละ ${U.formatMoney(st.left / daysLeft)}</b> (อีก ${daysLeft} วันรวมวันนี้)</div>`
+        : `<div class="card hint critical">⛔ เกินงบ${esc(cat.name)}แล้ว ${U.formatMoney(-st.left)}</div>`;
+    }
+
+    const buckets = U.byTimeOfDay(txs).filter((b) => b.count);
+    const days = Array.from({ length: dim }, () => 0);
+    for (const t of txs) days[Number(t.date.slice(8, 10)) - 1] += t.amount;
+
+    view.innerHTML = `
+      <a class="back-link" href="#/categories">‹ สรุปหมวดหมู่</a>
+      <div class="page-head cat-head">
+        <h1 class="cat-title"><span class="tx-icon" style="--cat:${catColor(cat)}">${esc(cat.icon)}</span>${esc(cat.name)}</h1>
+        <button class="btn primary" data-act="add-in-cat" data-id="${esc(id)}">+ บันทึก${esc(cat.name)}</button>
+      </div>
+      ${monthSwitcher()}
+      <div class="stats four">
+        ${stat(verb, U.formatMoney(total), type, deltaText(total, prevTotal, type === 'income'))}
+        ${planned ? stat('งบเดือนนี้', U.formatMoney(planned.total), '', `<span>${st.icon} ${st.msg}</span>`) : stat('งบเดือนนี้', '—', '', '<a href="#/plan">ตั้งงบหมวดนี้ ›</a>')}
+        ${stat('จำนวนรายการ', `${txs.length} ครั้ง`, '', txs.length ? `<span class="muted">เฉลี่ย ${U.formatMoney(total / txs.length)}/ครั้ง</span>` : '')}
+        ${stat('เฉลี่ยต่อวัน', elapsed ? U.formatMoney(total / elapsed) : '—', '', elapsed ? `<span class="muted">จาก ${elapsed} วัน</span>` : '')}
+      </div>
+      ${planned ? `<div class="card budget">${meter(st, cat.name)}<div class="budget-msg">${verb} ${U.formatMoney(total)} จากงบ ${U.formatMoney(planned.total)} · ${st.icon} ${st.msg}</div></div>` : ''}
+      ${hint}
+      ${!txs.length ? `<div class="empty"><div class="empty-icon">${esc(cat.icon)}</div><p>ยังไม่มีรายการ${esc(cat.name)}ในเดือนนี้</p>
+          <button class="btn primary" data-act="add-in-cat" data-id="${esc(id)}">+ บันทึก${esc(cat.name)}</button></div>` : `
+      <div class="grid-2">
+        <section class="card">
+          <h2>ช่วงเวลาที่${type === 'income' ? 'ได้รับ' : 'ใช้จ่าย'}</h2>
+          <table class="table">
+            <thead><tr><th>ช่วงเวลา</th><th class="num">ครั้ง</th><th class="num">รวม</th><th class="num">เฉลี่ย/ครั้ง</th></tr></thead>
+            <tbody>${buckets.map((b) => `<tr><td>${esc(b.label)} <span class="muted small">${esc(b.range)}</span>
+                <div class="pct-bar"><span style="width:${total ? (b.total / total) * 100 : 0}%;background:${catColor(cat)}"></span></div></td>
+              <td class="num">${b.count}</td><td class="num">${U.formatMoney(b.total)}</td><td class="num">${U.formatMoney(b.total / b.count)}</td></tr>`).join('')}</tbody>
+          </table>
+        </section>
+        <section class="card">
+          <h2>รายวัน</h2>
+          ${C.bars(days.map((v, i) => ({ label: String(i + 1), values: [U.round2(v)], tip: `วันที่ ${i + 1}\n${verb} ${U.formatMoney(v)}` })),
+            [{ label: cat.name, color: catColor(cat) }], { label: `${cat.name}รายวัน`, labelEvery: 5, height: 180, width: Math.min(chartWidth(), 460) })}
+        </section>
+      </div>
+      <h2 class="section-title">รายการทั้งหมด (${txs.length})</h2>
+      <div class="cat-entries">${txGroupsHTML(txs, { showCat: false })}</div>`}`;
+  }
+
+  /* ---------- Monthly plan editor ---------- */
+
+  const PLAN_KINDS = [
+    { kind: 'income', title: '💼 รายรับประจำ', desc: 'เช่น เงินเดือน · ทุกเดือนกด “ได้รับแล้ว” ในหน้ารายการเพื่อบันทึก', type: 'income' },
+    { kind: 'fixed', title: '🏠 ค่าใช้จ่ายคงที่', desc: 'จ่ายเท่าเดิมทุกเดือน เช่น ค่าห้อง ค่าเน็ต · กด “จ่ายแล้ว” เดือนละครั้ง', type: 'expense' },
+    { kind: 'budget', title: '🍜 งบรายหมวด', desc: 'ใช้ทีละรายการ เช่น ค่ากิน ค่าบันเทิง · บันทึกทุกมื้อ/ทุกครั้ง แล้วดูว่าเหลือเท่าไหร่', type: 'expense' },
+  ];
+
+  function defaultPlanDraft() {
+    const pick = [['income', 'salary', 'เงินเดือน'], ['fixed', 'home', 'ค่าห้อง'], ['fixed', 'bills', 'ค่าน้ำ/ไฟ/เน็ต'],
+      ['budget', 'food', ''], ['budget', 'transport', ''], ['budget', 'fun', '']];
+    return pick.filter(([, c]) => S.getCategory(c)).map(([kind, categoryId, label]) => ({ id: U.uid(), kind, categoryId, amount: '', label }));
+  }
+
+  function renderPlan() {
+    if (!planDraft) planDraft = S.plan.length ? S.plan.map((i) => ({ ...i })) : defaultPlanDraft();
+    view.innerHTML = `
+      ${dbNotice()}
+      <a class="back-link" href="#/categories">‹ สรุปหมวดหมู่</a>
+      <h1 class="page-title">แผนรายเดือน</h1>
+      <p class="muted lead">กรอกครั้งเดียว ใช้ได้ทุกเดือน แก้ไขได้ตลอด ช่องที่เว้นว่างจะไม่ถูกบันทึก</p>
+      <form id="planForm" novalidate>
+        ${PLAN_KINDS.map((k) => `<section class="card plan-section">
+          <h2>${k.title}</h2><p class="muted small">${k.desc}</p>
+          <div class="plan-rows">${planDraft.map((row, idx) => (row.kind === k.kind ? planRowHTML(row, idx, k.type) : '')).join('')}</div>
+          <button type="button" class="btn btn-sm ghost" data-act="plan-add-row" data-kind="${k.kind}">+ เพิ่ม</button>
+        </section>`).join('')}
+        <section class="card plan-summary" id="planSummary"></section>
+        <p id="planErr" class="error" role="alert"></p>
+        <div class="plan-actions"><a class="btn ghost" href="#/categories">ยกเลิก</a><button class="btn primary" type="submit">บันทึกแผน</button></div>
+      </form>`;
+    paintPlanSummary();
+    const f = $('#planForm');
+    f.addEventListener('input', (e) => {
+      const rowEl = e.target.closest('.plan-row');
+      if (!rowEl) return;
+      const row = planDraft[Number(rowEl.dataset.idx)];
+      if (e.target.name === 'amount') row.amount = e.target.value;
+      if (e.target.name === 'label') row.label = e.target.value;
+      if (e.target.name === 'cat') { row.categoryId = e.target.value; rowEl.querySelector('[name=label]').placeholder = catName(row.categoryId); }
+      rowEl.classList.remove('invalid');
+      paintPlanSummary();
+    });
+    f.addEventListener('submit', (e) => {
+      e.preventDefault();
+      let bad = null;
+      const items = [];
+      planDraft.forEach((row, idx) => {
+        const raw = String(row.amount).trim();
+        if (!raw) return;
+        const amount = U.parseAmount(raw);
+        if (!amount) { bad = bad === null ? idx : bad; f.querySelector(`.plan-row[data-idx="${idx}"]`).classList.add('invalid'); return; }
+        items.push({ id: row.id, kind: row.kind, categoryId: row.categoryId, amount, label: (row.label || '').trim() });
+      });
+      if (bad !== null) { $('#planErr').textContent = 'กรุณากรอกจำนวนเงินเป็นตัวเลขที่มากกว่า 0'; f.querySelector(`.plan-row[data-idx="${bad}"] [name=amount]`).focus(); return; }
+      S.setPlan(items);
+      planDraft = null;
+      toast(items.length ? 'บันทึกแผนรายเดือนแล้ว' : 'ล้างแผนรายเดือนแล้ว');
+      location.hash = '#/categories';
+    });
+  }
+
+  function planRowHTML(row, idx, type) {
+    return `<div class="plan-row" data-idx="${idx}">
+      <select name="cat" aria-label="หมวดหมู่">${S.categories[type].map((c) => `<option value="${esc(c.id)}"${c.id === row.categoryId ? ' selected' : ''}>${esc(c.icon)} ${esc(c.name)}</option>`).join('')}</select>
+      <input name="label" value="${esc(row.label || '')}" placeholder="${esc(catName(row.categoryId))}" maxlength="40" aria-label="ชื่อที่แสดง (ไม่บังคับ)">
+      <label class="plan-amount"><span>฿</span><input name="amount" inputmode="decimal" value="${esc(row.amount)}" placeholder="0" aria-label="จำนวนเงินต่อเดือน"></label>
+      <button type="button" class="icon-btn danger-text" data-act="plan-del-row" data-idx="${idx}" aria-label="ลบแถวนี้">✕</button>
+    </div>`;
+  }
+
+  function paintPlanSummary() {
+    const box = $('#planSummary');
+    if (!box) return;
+    const items = planDraft.map((r) => ({ kind: r.kind, amount: U.parseAmount(r.amount) || 0 }));
+    const pt = U.planTotals(items);
+    const share = (v) => (pt.income ? Math.max(0, (v / pt.income) * 100) : 0);
+    box.innerHTML = `<h2>สรุปแผน</h2>
+      <div class="plan-math">
+        <div><span>รายรับประจำ</span><b>${U.formatMoney(pt.income)}</b></div>
+        <div><span><i class="key" style="background:var(--s1)"></i>− ค่าใช้จ่ายคงที่</span><b>${U.formatMoney(pt.fixed)}</b></div>
+        <div><span><i class="key" style="background:var(--s2)"></i>− งบรายหมวด</span><b>${U.formatMoney(pt.budget)}</b></div>
+        <div class="plan-total"><span><i class="key" style="background:var(--s3)"></i>= เหลือเก็บ/ใช้อิสระ</span><b class="${moneyCls(pt.free)}">${U.formatSigned(pt.free)}</b></div>
+      </div>
+      ${pt.income ? `<div class="plan-bar" role="img" aria-label="สัดส่วนจากรายรับ">
+          <span style="width:${share(pt.fixed)}%;background:var(--s1)"></span><span style="width:${share(pt.budget)}%;background:var(--s2)"></span><span style="width:${share(pt.free)}%;background:var(--s3)"></span></div>
+        <p class="small ${pt.free < 0 ? 'neg' : 'muted'}">${pt.free < 0 ? `⛔ แผนรายจ่ายเกินรายรับ ${U.formatMoney(-pt.free)}` : `เหลือเก็บ ${(share(pt.free)).toFixed(0)}% ของรายรับ`}</p>` : '<p class="small muted">กรอกรายรับประจำเพื่อดูว่าจะเหลือเก็บเท่าไหร่</p>'}`;
   }
 
   /* ---------- Monthly summary ---------- */
@@ -329,15 +638,17 @@
 
     view.innerHTML = `
       <h1 class="page-title">ตั้งค่า</h1>
+      ${dbNotice()}
       ${migrationBanner()}
       ${accountSection()}
+      ${planSettingsCard()}
       <section class="card">
-        <h2>งบประมาณรายจ่ายต่อเดือน</h2>
+        <h2>งบประมาณรายจ่ายรวมต่อเดือน</h2>
         <form id="budgetForm" class="row">
           <input id="budgetInput" inputmode="decimal" placeholder="เช่น 20000 (เว้นว่าง = ไม่ใช้งบ)" value="${S.settings.budget || ''}" aria-label="งบประมาณ">
           <button class="btn primary">บันทึก</button>
         </form>
-        <p class="muted small">แสดงแถบงบประมาณในหน้ารายการ และเตือนเมื่อใช้เกิน 80%</p>
+        <p class="muted small">แสดงแถบงบประมาณในหน้ารายการ และเตือนเมื่อใช้เกิน 80% · ถ้าเว้นว่าง จะใช้ยอดค่าใช้จ่ายคงที่ + งบรายหมวดจากแผนรายเดือน</p>
       </section>
       <div class="grid-2">${catSection('expense', 'หมวดหมู่รายจ่าย')}${catSection('income', 'หมวดหมู่รายรับ')}</div>
       <section class="card">
@@ -434,6 +745,17 @@
     </section>`;
   }
 
+  function planSettingsCard() {
+    const pt = U.planTotals(S.plan);
+    return `<section class="card">
+      <h2>แผนรายเดือน</h2>
+      ${S.plan.length
+        ? `<p class="small">รายรับ ${U.formatMoney(pt.income)} · ค่าใช้จ่ายคงที่ ${U.formatMoney(pt.fixed)} · งบรายหมวด ${U.formatMoney(pt.budget)} · เหลือเก็บ <span class="${moneyCls(pt.free)}">${U.formatSigned(pt.free)}</span></p>`
+        : '<p class="muted small">ยังไม่ได้ตั้ง กรอกเงินเดือน ค่าห้อง ค่ากิน ฯลฯ เพื่อดูว่าแต่ละหมวดใช้ไปเท่าไหร่ และเหลือเท่าไหร่</p>'}
+      <a class="btn primary" href="#/plan">${S.plan.length ? '✏️ แก้ไขแผน' : 'ตั้งแผนรายเดือน'}</a>
+    </section>`;
+  }
+
   /* ---------- Sign-in screen ---------- */
 
   let authTab = 'signin';
@@ -523,13 +845,16 @@
   let formType = 'expense';
   let formCat = null;
 
-  function openDialog(tx) {
+  /** preset (new entries only): {type, categoryId} e.g. "+ บันทึกค่ากิน" from a category page. */
+  function openDialog(tx, preset) {
+    preset = preset || {};
     editing = tx || null;
-    formType = tx ? tx.type : (state.type === 'income' ? 'income' : 'expense');
-    formCat = tx ? tx.categoryId : null;
+    formType = tx ? tx.type : (preset.type || (state.type === 'income' ? 'income' : 'expense'));
+    formCat = tx ? tx.categoryId : (preset.categoryId || null);
     $('#txTitle').textContent = tx ? 'แก้ไขรายการ' : 'บันทึกรายการใหม่';
     $('#fAmount').value = tx ? String(tx.amount) : '';
     $('#fDate').value = tx ? tx.date : (isCurrentMonth() ? U.toISODate(today) : U.toISODate(new Date(state.year, state.month, 1)));
+    $('#fTime').value = tx ? (tx.time || '') : U.nowHHMM();
     $('#fNote').value = tx ? tx.note : '';
     $('#fDelete').hidden = !tx;
     $('#fErr').textContent = '';
@@ -545,14 +870,43 @@
     if (!cats.some((c) => c.id === formCat)) formCat = cats[0].id;
     $('#fCats').innerHTML = cats.map((c) => `<button type="button" class="cat-chip" data-cat="${esc(c.id)}" aria-pressed="${c.id === formCat}">
       <span class="cat-chip-icon">${esc(c.icon)}</span><span>${esc(c.name)}</span></button>`).join('');
+    paintNoteChips();
+  }
+
+  function isFoodCategory(id) {
+    const c = S.getCategory(id);
+    return !!c && (c.id === 'food' || /กิน|อาหาร/.test(c.name));
+  }
+
+  /** One-tap notes: meals for food, plus notes used recently in this category. */
+  function paintNoteChips() {
+    const chips = [];
+    let suggested = null;
+    if (formType === 'expense' && isFoodCategory(formCat)) {
+      chips.push('มื้อเช้า', 'มื้อกลางวัน', 'มื้อเย็น', 'มื้อดึก', 'ของว่าง', 'เครื่องดื่ม');
+      const b = U.timeBucket($('#fTime').value);
+      if (b && !editing) suggested = b.meal;
+    }
+    const seen = new Set(chips);
+    let recent = 0;
+    const history = S.transactions.filter((t) => t.categoryId === formCat && t.note)
+      .sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0));
+    for (const t of history) {
+      if (recent >= 6) break;
+      if (!seen.has(t.note)) { seen.add(t.note); chips.push(t.note); recent++; }
+    }
+    $('#fChips').innerHTML = chips.map((n) => `<button type="button" class="chip note-chip${n === suggested ? ' suggested' : ''}" data-note="${esc(n)}">${esc(n)}</button>`).join('');
   }
 
   form.addEventListener('click', (e) => {
     const t = e.target.closest('[data-ftype]');
     if (t) { formType = t.dataset.ftype; paintForm(); return; }
     const c = e.target.closest('[data-cat]');
-    if (c) { formCat = c.dataset.cat; form.querySelectorAll('[data-cat]').forEach((b) => b.setAttribute('aria-pressed', String(b === c))); }
+    if (c) { formCat = c.dataset.cat; form.querySelectorAll('[data-cat]').forEach((b) => b.setAttribute('aria-pressed', String(b === c))); paintNoteChips(); return; }
+    const n = e.target.closest('[data-note]');
+    if (n) { $('#fNote').value = n.dataset.note; form.querySelectorAll('[data-note]').forEach((b) => b.classList.toggle('picked', b === n)); }
   });
+  $('#fTime').addEventListener('change', paintNoteChips);
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -560,7 +914,7 @@
     const date = $('#fDate').value;
     if (!amount) { $('#fErr').textContent = 'กรุณากรอกจำนวนเงินที่มากกว่า 0'; $('#fAmount').focus(); return; }
     if (!date) { $('#fErr').textContent = 'กรุณาเลือกวันที่'; return; }
-    const payload = { type: formType, amount, categoryId: formCat, date, note: $('#fNote').value.trim() };
+    const payload = { type: formType, amount, categoryId: formCat, date, time: $('#fTime').value || '', note: $('#fNote').value.trim() };
     if (editing) { S.updateTransaction(editing.id, payload); toast('แก้ไขรายการแล้ว'); }
     else { S.addTransaction(payload); toast(`บันทึก${formType === 'income' ? 'รายรับ' : 'รายจ่าย'} ${U.formatMoney(amount)} แล้ว`); }
     // Jump to the month of the saved item so the user sees it.
@@ -582,6 +936,11 @@
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
 
   /* ---------- Global actions ---------- */
+
+  /** Salary/rent recorded today when viewing this month, otherwise on the 1st of the viewed month. */
+  function planRecordDate() {
+    return isCurrentMonth() ? U.toISODate(today) : U.toISODate(new Date(state.year, state.month, 1));
+  }
 
   function download(name, content, mime) {
     const a = document.createElement('a');
@@ -607,6 +966,33 @@
     'export-json': () => download(`aitrack-backup-${U.toISODate(new Date())}.json`, S.exportJSON(), 'application/json'),
     'sample': () => { S.loadSample(); toast('เพิ่มข้อมูลตัวอย่าง 6 เดือนแล้ว'); render(); },
     'reset': () => { if (confirm('ลบข้อมูลทั้งหมดรวมถึงหมวดหมู่ที่ตั้งไว้? การกระทำนี้ย้อนกลับไม่ได้')) { S.reset(); toast('ลบข้อมูลทั้งหมดแล้ว'); render(); } },
+    'add-in-cat': (el) => { const cat = S.getCategory(el.dataset.id); if (cat) openDialog(null, { type: catType(cat), categoryId: cat.id }); },
+    'plan-record': (el) => {
+      const item = S.plan.find((i) => i.id === el.dataset.id);
+      if (!item) return;
+      const tx = S.recordPlanItem(item, state.year, state.month, planRecordDate());
+      render();
+      toast(`บันทึก${item.label || catName(item.categoryId)} ${U.formatMoney(tx.amount)} แล้ว`, 'แก้ไขยอด', () => openDialog(tx));
+    },
+    'plan-record-all': () => {
+      const pending = S.plan.filter((i) => i.kind !== 'budget' && !S.planTx(i.id, state.year, state.month));
+      pending.forEach((i) => S.recordPlanItem(i, state.year, state.month, planRecordDate()));
+      render();
+      toast(`บันทึกรายการประจำ ${pending.length} รายการแล้ว`);
+    },
+    'plan-add-row': (el) => {
+      const kind = el.dataset.kind;
+      const type = kind === 'income' ? 'income' : 'expense';
+      const used = new Set(planDraft.map((r) => r.categoryId));
+      const cat = S.categories[type].find((c) => !used.has(c.id) && !c.other) || S.categories[type][0];
+      planDraft.push({ id: U.uid(), kind, categoryId: cat.id, amount: '', label: '' });
+      renderPlan();
+      const rows = view.querySelectorAll('.plan-row');
+      const last = [...rows].reverse().find((r) => planDraft[Number(r.dataset.idx)].kind === kind);
+      if (last) last.querySelector('[name=amount]').focus();
+    },
+    'plan-del-row': (el) => { planDraft.splice(Number(el.dataset.idx), 1); renderPlan(); },
+    'dismiss-plan-cta': () => { lsSet('aitrack.planCtaDismissed', '1'); render(); },
     'auth-tab': (el) => { authTab = el.dataset.tab; render(); },
     'use-local': () => { Cloud.useLocalMode(); render(); },
     'go-login': () => { Cloud.leaveLocalMode(); authTab = 'signin'; render(); },
@@ -656,7 +1042,7 @@
   document.addEventListener('keydown', (e) => {
     if (dlg.open || e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'n' || e.key === '+') { e.preventDefault(); openDialog(); }
-    if (currentRoute() === 'home' || currentRoute() === 'summary') {
+    if (['home', 'summary', 'categories'].includes(currentRoute())) {
       if (e.key === 'ArrowLeft') shiftMonth(-1);
       if (e.key === 'ArrowRight') shiftMonth(1);
     }

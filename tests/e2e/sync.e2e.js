@@ -24,6 +24,9 @@ let BASE;
 
 // ---- fake server ----
 const users = {}; const db = { transactions: [], user_settings: [] }; const pages = [];
+// legacy = a database created from the first schema version (no time_of_day / plan columns yet)
+let legacy = false;
+const LEGACY_COLS = { transactions: 'time_of_day', user_settings: 'plan' };
 const match = (row, filters) => filters.every(([op, c, v]) => op === 'eq' ? String(row[c]) === String(v) : v.includes(row[c]));
 function broadcast(ev) { for (const p of pages) p.evaluate((e) => window.__sbEvent && window.__sbEvent(e), ev).catch(() => {}); }
 function handle(req) {
@@ -32,8 +35,12 @@ function handle(req) {
   if (!req.uid) return { error: { message: 'JWT required' } };
   const t = db[req.table]; const pk = req.table === 'transactions' ? (r) => r.user_id + '|' + r.id : (r) => r.user_id;
   const visible = (r) => r.user_id === req.uid; // RLS
+  if (legacy && req.action === 'upsert' && req.rows.some((r) => LEGACY_COLS[req.table] in r)) {
+    return { error: { code: 'PGRST204', message: `Could not find the '${LEGACY_COLS[req.table]}' column of '${req.table}' in the schema cache` } };
+  }
   if (req.action === 'select') {
     let rows = t.filter((r) => visible(r) && match(r, req.filters));
+    if (legacy) rows = rows.map((r) => { const o = { ...r }; delete o[LEGACY_COLS[req.table]]; return o; });
     if (req.range) rows = rows.slice(req.range[0], req.range[1] + 1);
     return { data: req.single ? (rows[0] || null) : JSON.parse(JSON.stringify(rows)), error: null };
   }
@@ -134,20 +141,54 @@ async function addTx(p, amount, note, income) {
   assert.deepEqual(bs, [20000, true], 'B got settings');
   console.log('5 ok: settings sync');
 
+  // 5b) monthly plan + time of day sync
+  await A.p.evaluate(() => AIStore.setPlan([
+    { id: 'p1', kind: 'income', categoryId: 'salary', amount: 20000, label: 'เงินเดือน' },
+    { id: 'p2', kind: 'fixed', categoryId: 'home', amount: 5000, label: 'ค่าห้อง' },
+    { id: 'p3', kind: 'budget', categoryId: 'food', amount: 3000, label: '' },
+  ]));
+  await A.p.goto(BASE + '#/categories/food'); await A.p.waitForSelector('.cat-head');
+  await A.p.click('.cat-head [data-act="add-in-cat"]');
+  await A.p.fill('#fAmount', '65'); await A.p.fill('#fTime', '12:30'); await A.p.click('[data-note="มื้อกลางวัน"]');
+  await A.p.click('#txForm button[type=submit]'); await wait(800);
+  const bPlan = await B.p.evaluate(() => [AIStore.plan.length, (AIStore.transactions.find((t) => t.note === 'มื้อกลางวัน') || {}).time]);
+  assert.deepEqual(bPlan, [3, '12:30'], 'B got plan + time');
+  // recording rent on both devices for the same month never duplicates (deterministic id)
+  await A.p.goto(BASE + '#/categories'); await B.p.goto(BASE + '#/categories');
+  await A.p.waitForSelector('.check-list'); await B.p.waitForSelector('.check-list');
+  await Promise.all([A.p.click('[data-act="plan-record"][data-id="p2"]'), B.p.click('[data-act="plan-record"][data-id="p2"]')]);
+  await wait(800);
+  assert.equal(serverTx('u-0').filter((r) => r.id.startsWith('plan-p2-')).length, 1, 'rent recorded once');
+  console.log('5b ok: plan + meal time sync, no duplicate rent');
+
+  // 5c) database still on the first schema version: app keeps working, local time kept, notice shown
+  legacy = true;
+  await A.p.goto(BASE + '#/');
+  await addTx(A.p, 45, 'ก่อนอัปเดตฐานข้อมูล'); await wait(800);
+  const row = serverTx('u-0').find((r) => r.note === 'ก่อนอัปเดตฐานข้อมูล');
+  assert(row && !('time_of_day' in row), 'saved without the missing column');
+  assert.equal(await A.p.textContent('#syncBadge'), '☁️ ซิงก์แล้ว');
+  await A.p.evaluate(() => AICloud.syncNow());
+  assert((await A.p.evaluate(() => AIStore.transactions.find((t) => t.note === 'ก่อนอัปเดตฐานข้อมูล').time)).match(/^\d\d:\d\d$/), 'time kept locally after pull');
+  await A.p.goto(BASE + '#/settings'); await A.p.waitForSelector('.notice');
+  legacy = false;
+  console.log('5c ok: works on old schema, shows upgrade notice');
+
   // 6) offline on A: queue, then flush when back online
+  const N = serverTx('u-0').length;
   await A.ctx.setOffline(true);
-    await A.p.evaluate(() => { location.hash = '#/'; });
+  await A.p.evaluate(() => { location.hash = '#/'; });
   await addTx(A.p, 999, 'ซื้อออฟไลน์'); await wait(500);
   const badgeOff = await A.p.textContent('#syncBadge');
-  assert(serverTx('u-0').length === 2, 'not on server while offline');
+  assert.equal(serverTx('u-0').length, N, 'not on server while offline');
   await A.ctx.setOffline(false); await wait(1200);
-  assert.equal(serverTx('u-0').length, 3, 'flushed after reconnect');
-  assert.equal(await txCount(B.p), 3, 'B got offline item after reconnect');
+  assert.equal(serverTx('u-0').length, N + 1, 'flushed after reconnect');
+  assert.equal(await txCount(B.p), N + 1, 'B got offline item after reconnect');
   console.log('6 ok: offline badge =', JSON.stringify(badgeOff), '→', await A.p.textContent('#syncBadge'));
 
   // 7) reload keeps session + data
   await B.p.reload(); await B.p.waitForSelector('.switcher'); await wait(300);
-  assert.equal(await txCount(B.p), 3);
+  assert.equal(await txCount(B.p), N + 1);
   console.log('7 ok: session persisted after reload');
 
   // 8) sign out clears cache, shows login
@@ -159,14 +200,14 @@ async function addTx(p, amount, note, income) {
   // 9) local mode, then sign in and migrate
   await B.p.click('[data-act="use-local"]'); await B.p.waitForSelector('.switcher');
   await addTx(B.p, 450, 'ข้อมูลก่อนล็อกอิน'); await wait(300);
-  assert.equal(serverTx('u-0').length, 3, 'local mode does not sync');
+  assert.equal(serverTx('u-0').length, N + 1, 'local mode does not sync');
   await B.p.goto(BASE + '#/settings'); await B.p.click('[data-act="go-login"]');
   await B.p.fill('[name=email]', 'me@example.com'); await B.p.fill('[name=password]', 'secret1');
   await B.p.click('#authForm button[type=submit]'); await B.p.waitForSelector('.banner');
   await shot(B.p, 'banner.png');
   await B.p.click('[data-act="migrate"]'); await wait(800);
-  assert.equal(serverTx('u-0').length, 4, 'migrated to server');
-  assert.equal(await txCount(A.p), 4, 'A sees migrated');
+  assert.equal(serverTx('u-0').length, N + 2, 'migrated to server');
+  assert.equal(await txCount(A.p), N + 2, 'A sees migrated');
   console.log('9 ok: local → account migration');
 
   // 10) RLS: other user's delete events are ignored
@@ -175,9 +216,9 @@ async function addTx(p, amount, note, income) {
   await C.p.fill('[name=email]', 'other@example.com'); await C.p.fill('[name=password]', 'secret2');
   await C.p.click('#authForm button[type=submit]'); await C.p.waitForSelector('.switcher');
   await addTx(C.p, 10, 'ของคนอื่น'); await wait(500);
-  assert.equal(await txCount(C.p), 1); assert.equal(await txCount(A.p), 4, 'A does not see C');
+  assert.equal(await txCount(C.p), 1); assert.equal(await txCount(A.p), N + 2, 'A does not see C');
   await C.p.locator('.tx').first().click(); await C.p.click('#fDelete'); await wait(500);
-  assert.equal(await txCount(A.p), 4, 'A unaffected by C delete');
+  assert.equal(await txCount(A.p), N + 2, 'A unaffected by C delete');
   console.log('10 ok: users isolated');
 
   // 11) no config → pure local mode, no login screen
