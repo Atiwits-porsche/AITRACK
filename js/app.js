@@ -17,7 +17,7 @@
   const view = $('#view');
   let pendingRender = false;
   let planDraft = null;
-  const ROUTES = { home: renderHome, categories: renderCategories, summary: renderSummary, year: renderYear, plan: renderPlan, settings: renderSettings };
+  const ROUTES = { home: renderHome, categories: renderCategories, summary: renderSummary, quarter: renderQuarter, year: renderYear, insights: renderInsights, plan: renderPlan, settings: renderSettings };
   let routeParam = null;
 
   /* ---------- helpers ---------- */
@@ -39,7 +39,7 @@
     if (Cloud.needsLogin) { renderAuth(); hideTip(); return; }
     const r = currentRoute();
     if (r !== 'plan') planDraft = null;
-    const navRoute = r === 'plan' ? 'categories' : r;
+    const navRoute = { plan: 'categories', quarter: 'summary', year: 'summary' }[r] || r;
     document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === navRoute));
     ROUTES[r]();
     hideTip();
@@ -85,13 +85,37 @@
 
   function moneyCls(n) { return n > 0 ? 'pos' : n < 0 ? 'neg' : ''; }
 
-  function deltaText(curr, prev, goodWhenUp) {
+  function deltaText(curr, prev, goodWhenUp, period) {
+    period = period || 'เดือนก่อน';
     const pc = U.percentChange(curr, prev);
-    if (pc === null) return '<span class="muted">ไม่มีข้อมูลเดือนก่อน</span>';
-    if (Math.abs(pc) < 0.5) return '<span class="muted">→ ใกล้เคียงเดือนก่อน</span>';
+    if (pc === null) return `<span class="muted">ไม่มีข้อมูล${period}</span>`;
+    if (Math.abs(pc) < 0.5) return `<span class="muted">→ ใกล้เคียง${period}</span>`;
     const up = pc > 0;
     const good = up === goodWhenUp;
-    return `<span class="${good ? 'pos' : 'neg'}">${up ? '▲' : '▼'} ${Math.abs(pc).toFixed(0)}%</span> <span class="muted">จากเดือนก่อน</span>`;
+    return `<span class="${good ? 'pos' : 'neg'}">${up ? '▲' : '▼'} ${Math.abs(pc).toFixed(0)}%</span> <span class="muted">จาก${period}</span>`;
+  }
+
+  /** Table cell: change from base to curr, arrow + % + amount (never color alone). */
+  function changeCell(curr, base, goodWhenUp) {
+    if (!base && !curr) return '<span class="muted">–</span>';
+    if (!base) return '<span class="muted">ใหม่</span>';
+    const pct = ((curr - base) / base) * 100;
+    if (Math.abs(pct) < 0.5) return '<span class="muted">→ เท่าเดิม</span>';
+    const up = pct > 0;
+    return `<span class="${up === goodWhenUp ? 'pos' : 'neg'}">${up ? '▲' : '▼'} ${Math.abs(pct).toFixed(0)}%</span><span class="muted small cell-sub">${U.formatSigned(curr - base, { noDecimals: true })}</span>`;
+  }
+
+  function savingRateOf(t) { return t.income > 0 ? (t.net / t.income) * 100 : null; }
+  function rateText(r) { return r === null ? '—' : `<span class="${moneyCls(r)}">${r.toFixed(0)}%</span>`; }
+
+  /** Month / quarter / year switch shown on top of every summary page. */
+  function summaryTabs(active) {
+    return `<nav class="sub-tabs no-print" aria-label="ช่วงเวลาที่สรุป">${[['summary', 'รายเดือน'], ['quarter', 'รายไตรมาส'], ['year', 'รายปี']]
+      .map(([r, l]) => `<a href="#/${r}" data-act="summary-tab" data-route="${r}"${r === active ? ' aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
+  }
+
+  function incomeExpenseLegend() {
+    return '<div class="legend"><span><i style="background:var(--c-income)"></i>รายรับ</span><span><i style="background:var(--c-expense)"></i>รายจ่าย</span></div>';
   }
 
   /* ---------- Home: transactions of the month ---------- */
@@ -542,6 +566,7 @@
     const top = txs.filter((x) => x.type === 'expense').sort((a, b) => b.amount - a.amount).slice(0, 5);
 
     view.innerHTML = `
+      ${summaryTabs('summary')}
       <div class="page-head">${monthSwitcher()}<button class="btn ghost no-print" data-act="print">🖨️ พิมพ์/บันทึก PDF</button></div>
       <p class="print-only print-title">สรุปรายรับรายจ่าย ${esc(U.monthLabel(year, month))}</p>
       <div class="stats four">
@@ -586,6 +611,7 @@
     const best = months.filter((m) => m.count).sort((a, b) => b.net - a.net)[0];
 
     view.innerHTML = `
+      ${summaryTabs('year')}
       <div class="page-head">
         <div class="switcher">
           <button class="icon-btn" data-act="prev-year" aria-label="ปีก่อน">‹</button>
@@ -602,9 +628,7 @@
         ${stat('รายจ่ายเฉลี่ย/เดือน', active ? U.formatMoney(t.expense / active) : '—', '', best ? `<span class="muted">เดือนที่เก็บได้มากสุด: ${esc(U.monthShort(best.month))}</span>` : '')}
       </div>
       <section class="card">
-        <div class="card-head"><h2>รายรับ vs รายจ่าย รายเดือน</h2>
-          <div class="legend"><span><i style="background:var(--c-income)"></i>รายรับ</span><span><i style="background:var(--c-expense)"></i>รายจ่าย</span></div>
-        </div>
+        <div class="card-head"><h2>รายรับ vs รายจ่าย รายเดือน</h2>${incomeExpenseLegend()}</div>
         ${C.bars(months.map((m) => ({ label: U.monthShort(m.month), values: [m.income, m.expense], key: String(m.month),
           tip: `${U.monthLabel(y, m.month)}\nรายรับ ${U.formatMoney(m.income)}\nรายจ่าย ${U.formatMoney(m.expense)}\nคงเหลือ ${U.formatSigned(m.net)}\n(แตะเพื่อดูสรุปเดือน)` })),
           [{ label: 'รายรับ', color: 'var(--c-income)' }, { label: 'รายจ่าย', color: 'var(--c-expense)' }], { label: 'รายรับและรายจ่ายรายเดือน', width: chartWidth(), labelEvery: chartWidth() < 480 ? 2 : 1 })}
@@ -624,7 +648,252 @@
           <h2>รายจ่ายตามหมวดหมู่ทั้งปี</h2>
           ${categoryTable(exp, t.expense, 'expense')}
         </section>
-      </div>`;
+      </div>
+      <section class="card">
+        <h2>สรุปรายไตรมาส</h2>
+        ${quarterTable(y, -1)}
+      </section>`;
+  }
+
+  /** The 4 quarters of a year; rows open that quarter. */
+  function quarterTable(year, currentQ) {
+    const qs = U.byQuarter(S.transactions, year);
+    return `<div class="table-wrap"><table class="table month-table">
+      <thead><tr><th>ไตรมาส</th><th class="num">รายรับ</th><th class="num">รายจ่าย</th><th class="num">คงเหลือ</th><th class="num">ออมได้</th></tr></thead>
+      <tbody>${qs.map((q) => `<tr class="${q.count ? 'link' : 'dim'}${q.quarter === currentQ ? ' current' : ''}" ${q.count ? `data-act="goto-quarter" data-year="${year}" data-key="${q.quarter}" tabindex="0"` : ''}>
+        <td>Q${q.quarter + 1} <span class="muted small">${esc(U.quarterMonths(q.quarter))}</span></td>
+        <td class="num">${q.income ? U.formatMoney(q.income, { noDecimals: true }) : '–'}</td>
+        <td class="num">${q.expense ? U.formatMoney(q.expense, { noDecimals: true }) : '–'}</td>
+        <td class="num ${moneyCls(q.net)}">${q.count ? U.formatSigned(q.net, { noDecimals: true }) : '–'}</td>
+        <td class="num">${q.count ? rateText(savingRateOf(q)) : '–'}</td></tr>`).join('')}</tbody>
+    </table></div>`;
+  }
+
+  /* ---------- Quarterly summary ---------- */
+
+  function renderQuarter() {
+    const year = state.year, q = U.quarterOf(state.month);
+    const txs = U.filterByQuarter(S.transactions, year, q);
+    const t = U.totals(txs);
+    const pq = U.shiftQuarter(year, q, -1);
+    const isNow = year === today.getFullYear() && q === U.quarterOf(today.getMonth());
+    // A quarter in progress is compared with the same span of the previous one (e.g. 1 Oct–17 Nov vs 1 Jul–17 Aug).
+    const mIn = today.getMonth() % 3, dayNow = today.getDate();
+    const fair = (list) => (isNow ? U.cutQuarter(list, mIn, dayNow) : list);
+    const prevTxs = fair(U.filterByQuarter(S.transactions, pq.year, pq.q));
+    const p = U.totals(prevTxs);
+    const period = isNow ? 'ช่วงเดียวกันของไตรมาสก่อน' : 'ไตรมาสก่อน';
+    const spanNote = isNow ? `เทียบช่วงเดียวกัน: 1 ${U.monthShort(q * 3)}–${dayNow} ${U.monthShort(q * 3 + mIn)} กับ 1 ${U.monthShort(pq.q * 3)}–${dayNow} ${U.monthShort(pq.q * 3 + mIn)} เพราะไตรมาสนี้ยังไม่จบ` : '';
+    const months = U.byMonth(S.transactions, year).slice(q * 3, q * 3 + 3);
+    const active = months.filter((m) => m.count).length;
+    const exp = U.byCategory(txs, 'expense');
+    const prevExp = new Map(U.byCategory(prevTxs, 'expense').map((r) => [r.categoryId, r.total]));
+    const best = months.filter((m) => m.count).sort((a, b) => b.net - a.net)[0];
+
+    view.innerHTML = `
+      ${summaryTabs('quarter')}
+      <div class="page-head">
+        <div class="switcher">
+          <button class="icon-btn" data-act="prev-quarter" aria-label="ไตรมาสก่อน">‹</button>
+          <h1>${esc(U.quarterLabel(year, q))}<span class="h1-sub">${esc(U.quarterMonths(q))}</span></h1>
+          <button class="icon-btn" data-act="next-quarter" aria-label="ไตรมาสถัดไป">›</button>
+          ${isNow ? '' : '<button class="chip" data-act="this-quarter">ไตรมาสนี้</button>'}
+        </div>
+        <button class="btn ghost no-print" data-act="print">🖨️ พิมพ์/บันทึก PDF</button>
+      </div>
+      <p class="print-only print-title">สรุปรายรับรายจ่าย ${esc(U.quarterLabel(year, q))} (${esc(U.quarterMonths(q))})</p>
+      <div class="stats four">
+        ${stat('รายรับ', U.formatMoney(t.income), 'income', deltaText(t.income, p.income, true, period))}
+        ${stat('รายจ่าย', U.formatMoney(t.expense), 'expense', deltaText(t.expense, p.expense, false, period))}
+        ${stat('คงเหลือ', `<span class="${moneyCls(t.net)}">${U.formatSigned(t.net)}</span>`, 'net', `<span class="muted">${period} ${U.formatSigned(p.net)}</span>`)}
+        ${stat('อัตราการออม', rateText(savingRateOf(t)), '', `<span class="muted">${period} ${savingRateOf(p) === null ? '—' : savingRateOf(p).toFixed(0) + '%'}</span>`)}
+      </div>
+      ${spanNote ? `<p class="muted small span-note">ℹ️ ${esc(spanNote)}</p>` : ''}
+      ${!txs.length ? '<div class="empty"><div class="empty-icon">🗓️</div><p>ยังไม่มีข้อมูลในไตรมาสนี้</p></div>' : `
+      <section class="card">
+        <div class="card-head"><h2>3 เดือนในไตรมาส</h2>${incomeExpenseLegend()}</div>
+        <div class="mini-stats"><span>รายจ่ายเฉลี่ย <b>${U.formatMoney(active ? t.expense / active : 0)}</b>/เดือน</span>${best ? `<span>เดือนที่เก็บได้มากสุด <b>${esc(U.monthShort(best.month))}</b> (${U.formatSigned(best.net, { noDecimals: true })})</span>` : ''}</div>
+        ${C.bars(months.map((m) => ({ label: U.monthShort(m.month), values: [m.income, m.expense], key: `${year}-${m.month}`,
+          tip: `${U.monthLabel(year, m.month)}\nรายรับ ${U.formatMoney(m.income)}\nรายจ่าย ${U.formatMoney(m.expense)}\nคงเหลือ ${U.formatSigned(m.net)}\n(แตะเพื่อดูสรุปเดือน)` })),
+          [{ label: 'รายรับ', color: 'var(--c-income)' }, { label: 'รายจ่าย', color: 'var(--c-expense)' }], { label: 'รายรับและรายจ่ายของแต่ละเดือนในไตรมาส', width: chartWidth(), height: 200 })}
+        <div class="table-wrap"><table class="table month-table">
+          <thead><tr><th>เดือน</th><th class="num">รายรับ</th><th class="num">รายจ่าย</th><th class="num">คงเหลือ</th><th class="num">ออมได้</th></tr></thead>
+          <tbody>${months.map((m) => `<tr class="${m.count ? 'link' : 'dim'}" ${m.count ? `data-act="goto-month" data-year="${year}" data-key="${m.month}" tabindex="0"` : ''}>
+            <td>${esc(U.monthShort(m.month))}</td><td class="num">${m.income ? U.formatMoney(m.income, { noDecimals: true }) : '–'}</td>
+            <td class="num">${m.expense ? U.formatMoney(m.expense, { noDecimals: true }) : '–'}</td><td class="num ${moneyCls(m.net)}">${m.count ? U.formatSigned(m.net, { noDecimals: true }) : '–'}</td>
+            <td class="num">${m.count ? rateText(savingRateOf(m)) : '–'}</td></tr>`).join('')}</tbody>
+          <tfoot><tr><td>รวม</td><td class="num">${U.formatMoney(t.income, { noDecimals: true })}</td><td class="num">${U.formatMoney(t.expense, { noDecimals: true })}</td><td class="num ${moneyCls(t.net)}">${U.formatSigned(t.net, { noDecimals: true })}</td><td class="num">${rateText(savingRateOf(t))}</td></tr></tfoot>
+        </table></div>
+      </section>
+      <section class="card">
+        <h2>รายจ่ายตามหมวดหมู่ เทียบไตรมาสก่อน</h2>
+        <div class="grid-2 flat">
+          ${exp.length ? `<div class="donut-wrap">${C.donut(donutSegments(exp, 'expense', t.expense), { label: 'สัดส่วนรายจ่ายตามหมวดหมู่ของไตรมาส', centerTop: U.formatMoney(t.expense, { noDecimals: true }), centerBottom: 'รายจ่ายรวม' })}</div>` : '<p class="muted pad">ไม่มีรายจ่าย</p>'}
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>หมวดหมู่</th><th class="num">ไตรมาสนี้</th><th class="num">เฉลี่ย/เดือน</th><th class="num">เทียบ Q${pq.q + 1}${isNow ? '*' : ''}</th></tr></thead>
+            <tbody>${exp.map((r) => {
+              const cat = S.getCategory(r.categoryId);
+              return `<tr><td><span class="swatch" style="background:${catColor(cat)}"></span>${esc(catIcon(r.categoryId))} ${esc(catName(r.categoryId))}</td>
+                <td class="num">${U.formatMoney(r.total, { noDecimals: true })}</td>
+                <td class="num">${U.formatMoney(r.total / (active || 1), { noDecimals: true })}</td>
+                <td class="num">${changeCell(r.total, prevExp.get(r.categoryId) || 0, false)}</td></tr>`;
+            }).join('')}</tbody>
+          </table>${isNow ? `<p class="muted small">* ช่วงเดียวกันของ Q${pq.q + 1}</p>` : ''}</div>
+        </div>
+      </section>`}
+      <section class="card">
+        <h2>ทั้ง 4 ไตรมาสของ${esc(U.yearLabel(year))}</h2>
+        ${quarterTable(year, q)}
+      </section>`;
+  }
+
+  /* ---------- Analysis ---------- */
+
+  function renderInsights() {
+    const { year, month } = state;
+    const cur = isCurrentMonth();
+    const days = U.daysInMonth(year, month);
+    const upto = cur ? today.getDate() : days;
+    const txs = U.filterByMonth(S.transactions, year, month);
+    const t = U.totals(txs);
+    const series = U.monthSeries(S.transactions, year, month, 6);
+    const withIncome = series.filter((m) => m.income > 0);
+    const sumInc = withIncome.reduce((a, m) => a + m.income, 0);
+    const avgRate = sumInc ? (withIncome.reduce((a, m) => a + m.net, 0) / sumInc) * 100 : null;
+    const proj = U.projectMonth(S.transactions, year, month, upto);
+    const budget = effectiveBudget();
+    const cmp = U.categoryVsAverage(S.transactions, year, month, 3, cur ? upto : 0);
+    const earliest = S.transactions.reduce((m, x) => (x.date < m ? x.date : m), U.toISODate(today));
+    const from = [U.toISODate(new Date(year, month - 2, 1)), earliest].sort()[1];
+    const to = U.toISODate(cur ? today : new Date(year, month, days));
+    const wk = from <= to ? U.byWeekday(S.transactions.filter((x) => !U.isPlanTx(x)), from, to) : [];
+    const freq = U.frequentNotes(txs, 6);
+    const pt = U.planTotals(S.plan);
+    const fixedBase = t.income || pt.income;
+    const fixedRatio = pt.fixed && fixedBase ? (pt.fixed / fixedBase) * 100 : null;
+    const insights = buildInsights({ cur, upto, days, t, avgRate, proj, budget, cmp, wk, freq, txs });
+
+    view.innerHTML = `
+      ${monthSwitcher()}
+      <div class="stats four">
+        ${stat('อัตราการออม', rateText(savingRateOf(t)), '', `<span class="muted">เฉลี่ย 6 เดือน ${avgRate === null ? '—' : avgRate.toFixed(0) + '%'}</span>`)}
+        ${stat('ใช้จ่ายทั่วไป/วัน', U.formatMoney(proj.everyday / proj.elapsed), '', '<span class="muted">ไม่นับรายการประจำ เช่น ค่าห้อง</span>')}
+        ${cur ? stat('คาดการณ์รายจ่ายสิ้นเดือน', U.formatMoney(proj.projected, { noDecimals: true }), 'expense', budget ? `<span class="muted">งบ ${U.formatMoney(budget, { noDecimals: true })}</span>` : `<span class="muted">จากการใช้จ่าย ${proj.elapsed} วันที่ผ่านมา</span>`)
+          : stat('รายจ่ายทั้งเดือน', U.formatMoney(t.expense, { noDecimals: true }), 'expense', budget ? `<span class="muted">งบ ${U.formatMoney(budget, { noDecimals: true })}</span>` : '')}
+        ${stat('ค่าใช้จ่ายคงที่ต่อรายรับ', fixedRatio === null ? '—' : `${fixedRatio.toFixed(0)}%`, '', fixedRatio === null ? '<a href="#/plan">ตั้งแผนรายเดือนเพื่อดู ›</a>' : `<span class="muted">${fixedRatio > 50 ? '⚠️ สูงกว่า 50% ที่แนะนำ' : '✅ ไม่เกิน 50% ที่แนะนำ'}</span>`)}
+      </div>
+      ${!S.transactions.length ? '<div class="empty"><div class="empty-icon">🔍</div><p>บันทึกรายการสักพัก แล้วจะมีบทวิเคราะห์ให้ดูที่นี่</p><button class="btn primary" data-act="add">+ บันทึกรายการ</button></div>' : `
+      <section class="card">
+        <h2>สิ่งที่น่าสังเกต${cur ? 'เดือนนี้' : ''}</h2>
+        ${insights.length ? `<ul class="insights">${insights.map((i) => `<li class="${i.tone}"><span class="ins-icon" aria-hidden="true">${i.icon}</span><div><b>${i.title}</b>${i.detail ? `<div class="muted small">${i.detail}</div>` : ''}</div></li>`).join('')}</ul>`
+          : '<p class="muted pad">ยังไม่มีข้อสังเกตที่ชัดเจน ลองบันทึกต่ออีกสักระยะ</p>'}
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>แนวโน้ม 6 เดือน</h2>${incomeExpenseLegend()}</div>
+        ${C.bars(series.map((m) => ({ label: U.monthShort(m.month), values: [m.income, m.expense], key: `${m.year}-${m.month}`,
+          tip: `${U.monthLabel(m.year, m.month)}\nรายรับ ${U.formatMoney(m.income)}\nรายจ่าย ${U.formatMoney(m.expense)}\nออมได้ ${savingRateOf(m) === null ? '—' : savingRateOf(m).toFixed(0) + '%'}\n(แตะเพื่อดูสรุปเดือน)` })),
+          [{ label: 'รายรับ', color: 'var(--c-income)' }, { label: 'รายจ่าย', color: 'var(--c-expense)' }], { label: 'รายรับและรายจ่าย 6 เดือนล่าสุด', width: chartWidth(), height: 200 })}
+        <div class="table-wrap"><table class="table month-table">
+          <thead><tr><th>เดือน</th><th class="num">รายรับ</th><th class="num">รายจ่าย</th><th class="num">ออมได้</th></tr></thead>
+          <tbody>${series.map((m) => `<tr class="${m.count ? 'link' : 'dim'}${m.year === year && m.month === month ? ' current' : ''}" ${m.count ? `data-act="goto-month" data-year="${m.year}" data-key="${m.month}" tabindex="0"` : ''}>
+            <td>${esc(U.monthShort(m.month))}</td><td class="num">${m.income ? U.formatMoney(m.income, { noDecimals: true }) : '–'}</td>
+            <td class="num">${m.expense ? U.formatMoney(m.expense, { noDecimals: true }) : '–'}</td><td class="num">${m.count ? rateText(savingRateOf(m)) : '–'}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </section>
+      <div class="grid-2">
+        <section class="card">
+          <h2>ใช้จ่ายตามวันในสัปดาห์</h2>
+          <p class="muted small">เฉลี่ยต่อวัน ${esc(U.dayLabel(from))} – ${esc(U.dayLabel(to))} · ไม่นับรายการประจำ</p>
+          ${wk.length ? C.bars(wk.map((d) => ({ label: d.label, values: [d.avg], tip: `วัน${d.label}\nเฉลี่ย ${U.formatMoney(d.avg)}/วัน\nรวม ${U.formatMoney(d.total)} (${d.days} วัน)` })),
+            [{ label: 'เฉลี่ยต่อวัน', color: 'var(--c-expense)' }], { label: 'รายจ่ายเฉลี่ยตามวันในสัปดาห์', width: Math.min(chartWidth(), 420), height: 180 }) : ''}
+        </section>
+        <section class="card">
+          <h2>จ่ายบ่อยที่สุด${cur ? 'เดือนนี้' : ''}</h2>
+          ${freq.length ? `<table class="table">
+            <thead><tr><th>รายการ</th><th class="num">ครั้ง</th><th class="num">รวม</th><th class="num">เฉลี่ย/ครั้ง</th></tr></thead>
+            <tbody>${freq.map((f) => `<tr><td>${esc(catIcon(f.categoryId))} ${esc(f.note)}</td><td class="num">${f.count}</td><td class="num">${U.formatMoney(f.total, { noDecimals: true })}</td><td class="num">${U.formatMoney(f.avg, { noDecimals: true })}</td></tr>`).join('')}</tbody>
+          </table>` : '<p class="muted pad">ยังไม่มีรายการที่ซ้ำกัน · ใส่บันทึกช่วยจำ (เช่น กาแฟ) เพื่อให้จับกลุ่มได้</p>'}
+        </section>
+      </div>
+      <section class="card">
+        <h2>เทียบหมวดหมู่กับค่าเฉลี่ย</h2>
+        <p class="muted small">${cmp.months ? `เทียบกับค่าเฉลี่ย ${cmp.months} เดือนก่อนหน้า${cur ? ` · ใช้เฉพาะวันที่ 1–${upto} ของทุกเดือน เพื่อให้เทียบกับเดือนที่ยังไม่จบได้ยุติธรรม` : ''}` : 'ยังไม่มีข้อมูลเดือนก่อนหน้าให้เทียบ'}</p>
+        ${cmp.rows.length ? `<div class="table-wrap"><table class="table">
+          <thead><tr><th>หมวดหมู่</th><th class="num">${cur ? 'เดือนนี้' : esc(U.monthShort(month))}</th><th class="num">ค่าเฉลี่ย</th><th class="num">เปลี่ยนแปลง</th></tr></thead>
+          <tbody>${cmp.rows.map((r) => {
+            const cat = S.getCategory(r.categoryId);
+            return `<tr class="link" data-act="goto-cat" data-id="${esc(r.categoryId)}" tabindex="0"><td><span class="swatch" style="background:${catColor(cat)}"></span>${esc(catIcon(r.categoryId))} ${esc(catName(r.categoryId))}</td>
+              <td class="num">${U.formatMoney(r.curr, { noDecimals: true })}</td><td class="num">${cmp.months ? U.formatMoney(r.avg, { noDecimals: true }) : '–'}</td>
+              <td class="num">${cmp.months ? changeCell(r.curr, r.avg, false) : '–'}</td></tr>`;
+          }).join('')}</tbody>
+        </table></div>` : ''}
+      </section>`}`;
+  }
+
+  /** Plain-language findings, most important first. Every tone carries an icon and words, never color alone. */
+  function buildInsights(d) {
+    const out = [];
+    const money = (n) => U.formatMoney(n, { noDecimals: true });
+    const left = d.days - d.upto;
+    if (d.cur && d.budget && d.proj.spent > 0) {
+      const perDay = left > 0 ? Math.max(0, d.budget - d.proj.spent) / left : 0;
+      if (d.proj.projected > d.budget) out.push({ tone: 'critical', icon: '⛔', title: `ถ้าใช้จ่ายแบบนี้ต่อ สิ้นเดือนจะใช้ประมาณ ${money(d.proj.projected)} เกินงบ ${money(d.proj.projected - d.budget)}`,
+        detail: d.proj.spent >= d.budget ? `ตอนนี้ใช้เกินงบ ${money(d.budget)} ไปแล้ว` : `เหลืออีก ${left} วัน ควรใช้ไม่เกินวันละ ${money(perDay)}` });
+      else out.push({ tone: 'good', icon: '✅', title: `คาดว่าสิ้นเดือนจะใช้ประมาณ ${money(d.proj.projected)} ยังอยู่ในงบ ${money(d.budget)}`,
+        detail: left > 0 ? `ใช้ได้อีกวันละ ${money(perDay)} โดยไม่เกินงบ` : '' });
+    } else if (!d.cur && d.budget && d.t.expense > 0) {
+      if (d.t.expense > d.budget) out.push({ tone: 'warning', icon: '⚠️', title: `เดือนนี้ใช้เกินงบ ${money(d.t.expense - d.budget)}`, detail: `ใช้ไป ${money(d.t.expense)} จากงบ ${money(d.budget)}` });
+      else out.push({ tone: 'good', icon: '✅', title: `ใช้จ่ายต่ำกว่างบ ${money(d.budget - d.t.expense)}`, detail: `ใช้ไป ${money(d.t.expense)} จากงบ ${money(d.budget)}` });
+    }
+
+    const rate = savingRateOf(d.t);
+    if (rate !== null) {
+      const avg = d.avgRate === null ? '' : `ค่าเฉลี่ย 6 เดือนคือ ${d.avgRate.toFixed(0)}%`;
+      if (rate < 0) out.push({ tone: 'critical', icon: '⛔', title: `รายจ่ายมากกว่ารายรับ ${money(-d.t.net)}`, detail: avg });
+      else if (rate < 10) out.push({ tone: 'warning', icon: '⚠️', title: `เก็บเงินได้ ${rate.toFixed(0)}% ของรายรับ`, detail: `แนะนำให้เก็บอย่างน้อย 10–20%${avg ? ' · ' + avg : ''}` });
+      else out.push({ tone: 'good', icon: '✅', title: `เก็บเงินได้ ${rate.toFixed(0)}% ของรายรับ (${money(d.t.net)})`, detail: avg });
+    } else if (d.t.expense > 0) {
+      out.push({ tone: 'info', icon: 'ℹ️', title: 'ยังไม่มีรายรับที่บันทึกไว้ในเดือนนี้', detail: 'บันทึกเงินเดือนเพื่อดูอัตราการออม' });
+    }
+
+    if (d.cmp.months) {
+      const sig = (r) => Math.abs(r.diff) >= Math.max(300, r.avg * 0.2) && r.avg > 0;
+      const up = d.cmp.rows.filter((r) => r.diff > 0 && sig(r)).sort((a, b) => b.diff - a.diff)[0];
+      const down = d.cmp.rows.filter((r) => r.diff < 0 && sig(r)).sort((a, b) => a.diff - b.diff)[0];
+      const span = d.cur ? ` (ช่วงวันที่ 1–${d.upto})` : '';
+      if (up) out.push({ tone: 'warning', icon: '📈', title: `${esc(catName(up.categoryId))}สูงกว่าปกติ ${up.pct.toFixed(0)}% (+${money(up.diff)})`,
+        detail: `${money(up.curr)} เทียบค่าเฉลี่ย ${money(up.avg)} ของ ${d.cmp.months} เดือนก่อน${span}` });
+      if (down) out.push({ tone: 'good', icon: '📉', title: `${esc(catName(down.categoryId))}ลดลง ${Math.abs(down.pct).toFixed(0)}% (−${money(-down.diff)})`,
+        detail: `${money(down.curr)} เทียบค่าเฉลี่ย ${money(down.avg)} ของ ${d.cmp.months} เดือนก่อน${span}` });
+    }
+
+    if (d.wk.length) {
+      const sum = (rows, k) => rows.reduce((a, r) => a + r[k], 0);
+      const we = d.wk.slice(5), wd = d.wk.slice(0, 5);
+      const weAvg = sum(we, 'days') ? sum(we, 'total') / sum(we, 'days') : 0;
+      const wdAvg = sum(wd, 'days') ? sum(wd, 'total') / sum(wd, 'days') : 0;
+      const peak = [...d.wk].sort((a, b) => b.avg - a.avg)[0];
+      if (sum(we, 'days') >= 2 && wdAvg > 0 && weAvg > wdAvg * 1.25) out.push({ tone: 'info', icon: '🗓️', title: `เสาร์–อาทิตย์ใช้จ่ายมากกว่าวันธรรมดา ${(((weAvg - wdAvg) / wdAvg) * 100).toFixed(0)}%`,
+        detail: `เฉลี่ยวันละ ${money(weAvg)} เทียบกับ ${money(wdAvg)} · วันที่ใช้มากสุดคือวัน${peak.label}` });
+      else if (weAvg > 0 && wdAvg > weAvg * 1.25) out.push({ tone: 'info', icon: '🗓️', title: `วันธรรมดาใช้จ่ายมากกว่าเสาร์–อาทิตย์ ${(((wdAvg - weAvg) / weAvg) * 100).toFixed(0)}%`,
+        detail: `เฉลี่ยวันละ ${money(wdAvg)} เทียบกับ ${money(weAvg)} · วันที่ใช้มากสุดคือวัน${peak.label}` });
+    }
+
+    const f = d.freq[0];
+    if (f && f.count >= 4) out.push({ tone: 'info', icon: '🔁', title: `"${esc(f.note)}" ${f.count} ครั้ง รวม ${money(f.total)}`,
+      detail: `เฉลี่ยครั้งละ ${money(f.avg)} · ถ้าลดลงครึ่งหนึ่งจะเหลือเงินเพิ่มประมาณ ${money(f.total / 2)}` });
+
+    const everyday = d.txs.filter((x) => x.type === 'expense' && !U.isPlanTx(x));
+    const everydayTotal = everyday.reduce((a, x) => a + x.amount, 0);
+    const big = everyday.sort((a, b) => b.amount - a.amount)[0];
+    if (big && big.amount >= 1000 && big.amount >= everydayTotal * 0.25) out.push({ tone: 'info', icon: '💸', title: `รายจ่ายก้อนใหญ่สุด: ${esc(big.note || catName(big.categoryId))} ${money(big.amount)}`,
+      detail: `คิดเป็น ${((big.amount / everydayTotal) * 100).toFixed(0)}% ของรายจ่ายทั่วไป · ${esc(U.dayLabel(big.date))}` });
+
+    if (d.txs.length) {
+      const free = U.noSpendDays(S.transactions, state.year, state.month, d.upto);
+      if (free >= 3) out.push({ tone: 'good', icon: '🌿', title: `มีวันที่ไม่ได้ใช้เงินเลย ${free} วัน`, detail: `จาก ${d.upto} วัน${d.cur ? 'ที่ผ่านมา' : 'ของเดือน'}` });
+    }
+    return out;
   }
 
   /* ---------- Settings ---------- */
@@ -976,7 +1245,18 @@
     'filter-type': (el) => { state.type = el.dataset.type; view.querySelectorAll('[data-act="filter-type"]').forEach((b) => b.setAttribute('aria-selected', String(b === el))); renderList(); },
     'edit-tx': (el) => { const tx = S.transactions.find((t) => t.id === el.dataset.id); if (tx) openDialog(tx); },
     'add': () => openDialog(),
-    'goto-month': (el) => { state.year = state.yearView; state.month = Number(el.dataset.key); location.hash = '#/summary'; },
+    'goto-month': (el) => { state.year = el.dataset.year ? Number(el.dataset.year) : state.yearView; state.month = Number(el.dataset.key); location.hash = '#/summary'; },
+    'goto-quarter': (el) => { state.year = Number(el.dataset.year); state.month = Number(el.dataset.key) * 3; if (currentRoute() === 'quarter') render(); else location.hash = '#/quarter'; },
+    'goto-cat': (el) => { location.hash = '#/categories/' + encodeURIComponent(el.dataset.id); },
+    'prev-quarter': () => shiftMonth(-3),
+    'next-quarter': () => shiftMonth(3),
+    'this-quarter': () => { state.year = today.getFullYear(); state.month = today.getMonth(); render(); },
+    'summary-tab': (el) => {
+      // Keep looking at the same period when switching month / quarter / year.
+      if (currentRoute() === 'year') state.year = state.yearView;
+      if (el.dataset.route === 'year') state.yearView = state.year;
+      location.hash = '#/' + el.dataset.route;
+    },
     'print': () => window.print(),
     'export-csv': () => download(`aitrack-${U.toISODate(new Date())}.csv`, U.toCSV(S.transactions, catName), 'text/csv;charset=utf-8'),
     'export-json': () => download(`aitrack-backup-${U.toISODate(new Date())}.json`, S.exportJSON(), 'application/json'),
@@ -1057,17 +1337,20 @@
   // Bar slots in the yearly chart open that month's summary.
   view.addEventListener('click', (e) => {
     const slot = e.target.closest('.hit-slot[data-key]');
-    if (slot && currentRoute() === 'year') actions['goto-month'](slot);
+    if (!slot) return;
+    const [y, m] = slot.dataset.key.split('-');
+    if (m !== undefined) { state.year = Number(y); state.month = Number(m); location.hash = '#/summary'; } else if (currentRoute() === 'year') actions['goto-month'](slot);
   });
   view.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.matches('tr[data-act]')) actions['goto-month'](e.target);
+    if (e.key === 'Enter' && e.target.matches('tr[data-act]')) actions[e.target.dataset.act](e.target);
   });
   document.addEventListener('keydown', (e) => {
     if (dlg.open || e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'n' || e.key === '+') { e.preventDefault(); openDialog(); }
-    if (['home', 'summary', 'categories'].includes(currentRoute())) {
-      if (e.key === 'ArrowLeft') shiftMonth(-1);
-      if (e.key === 'ArrowRight') shiftMonth(1);
+    const step = { home: 1, summary: 1, categories: 1, insights: 1, quarter: 3 }[currentRoute()];
+    if (step) {
+      if (e.key === 'ArrowLeft') shiftMonth(-step);
+      if (e.key === 'ArrowRight') shiftMonth(step);
     }
   });
   $('#addBtn').addEventListener('click', () => openDialog());
