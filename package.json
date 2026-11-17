@@ -2,9 +2,10 @@
   "name": "aitrack",
   "version": "1.0.0",
   "private": true,
-  "description": "แอปบันทึกรายรับรายจ่ายรายเดือน พร้อมหน้าสรุป",
+  "description": "แอปบันทึกรายรับรายจ่ายรายเดือน พร้อมหน้าสรุป ซิงก์ข้ามอุปกรณ์ด้วย Supabase",
   "scripts": {
     "start": "npx --yes http-server -c-1 -p 8080 .",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "node tests/e2e/sync.e2e.js"
   }
 }
