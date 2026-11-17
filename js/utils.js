@@ -209,6 +209,30 @@
     return map;
   }
 
+  // Notes written by every version of the sample-data generator.
+  const SAMPLE_NOTES = new Set(['เงินเดือน', 'งานออกแบบ', 'ค่าห้อง', 'ค่าเช่าห้อง', 'ค่าน้ำ/ไฟ/เน็ต', 'ค่าไฟ + เน็ต',
+    'มื้อกลางวัน', 'ข้าวกลางวัน', 'กาแฟ', 'มื้อเย็น', 'มื้อเช้า', 'ซื้อของสด', 'BTS', 'เติมน้ำมัน', 'แท็กซี่',
+    'เสื้อผ้า', 'ของใช้ในบ้าน', 'ดูหนัง', 'Netflix', 'ร้านยา']);
+
+  /**
+   * Ids of entries made by "try sample data". New sample entries carry a "sample-" id; older ones are
+   * recognised as a burst of 30+ entries created within moments of each other, nearly all with sample notes.
+   * A person typing entries by hand never creates that many that fast.
+   */
+  function findSampleIds(txs) {
+    const ids = new Set();
+    for (const t of txs) if (String(t.id).startsWith('sample-')) ids.add(t.id);
+    const sorted = txs.filter((t) => t.createdAt > 0).sort((a, b) => a.createdAt - b.createdAt);
+    let start = 0;
+    for (let i = 1; i <= sorted.length; i++) {
+      if (i < sorted.length && sorted[i].createdAt - sorted[i - 1].createdAt <= 2000) continue;
+      const run = sorted.slice(start, i);
+      if (run.length >= 30 && run.filter((t) => SAMPLE_NOTES.has(t.note)).length >= run.length * 0.9) run.forEach((t) => ids.add(t.id));
+      start = i;
+    }
+    return ids;
+  }
+
   function percentChange(curr, prev) {
     if (!prev) return null;
     return ((curr - prev) / prev) * 100;
@@ -236,7 +260,7 @@
     uid, uuid, pad, toISODate, parseISODate, daysInMonth, formatMoney, formatSigned, formatNumber, formatCompact,
     monthLabel, monthShort, yearLabel, dayLabel, parseAmount, filterByMonth, filterByYear, totals, byCategory,
     byDay, byMonth, groupByDate, percentChange, toCSV, escapeHTML, round2,
-    nowHHMM, TIME_BUCKETS, timeBucket, byTimeOfDay, planTotals, planByCategory,
+    nowHHMM, TIME_BUCKETS, timeBucket, byTimeOfDay, planTotals, planByCategory, findSampleIds,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

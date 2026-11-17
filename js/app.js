@@ -101,6 +101,7 @@
     const t = U.totals(txs);
     view.innerHTML = `
       ${migrationBanner()}
+      ${sampleBanner()}
       ${monthSwitcher()}
       <div class="stats">
         ${stat('รายรับ', U.formatMoney(t.income), 'income')}
@@ -129,6 +130,18 @@
       <div><b>พบข้อมูล ${d.transactions.length} รายการที่บันทึกไว้ในเครื่องนี้ก่อนเข้าสู่ระบบ</b>
       <div class="muted small">ย้ายขึ้นบัญชีเพื่อให้ดูได้จากทุกอุปกรณ์</div></div>
       <div class="btn-row"><button class="btn primary" data-act="migrate">ย้ายขึ้นบัญชี</button><button class="btn ghost" data-act="skip-migrate">ไม่ต้อง</button></div>
+    </div>`;
+  }
+
+  /** Shown while "try sample data" entries are mixed in, with a way back to only the person's own data. */
+  function sampleBanner() {
+    const n = S.sampleData().transactions.length;
+    if (!n) return '';
+    const own = S.transactions.length - n;
+    return `<div class="card banner sample-banner">
+      <div><b>🧪 ตอนนี้มีข้อมูลตัวอย่าง ${n.toLocaleString('th-TH')} รายการปนอยู่</b>
+      <div class="muted small">กดลบเพื่อกลับไปใช้ข้อมูลจริงของคุณ${own ? ` · รายการที่คุณบันทึกเอง ${own.toLocaleString('th-TH')} รายการจะยังอยู่ครบ` : ''}</div></div>
+      <div class="btn-row"><button class="btn primary" data-act="remove-sample">↩️ ลบข้อมูลตัวอย่าง</button></div>
     </div>`;
   }
 
@@ -640,6 +653,7 @@
       <h1 class="page-title">ตั้งค่า</h1>
       ${dbNotice()}
       ${migrationBanner()}
+      ${sampleBanner()}
       ${accountSection()}
       ${planSettingsCard()}
       <section class="card">
@@ -658,7 +672,9 @@
           <button class="btn" data-act="export-csv">⬇️ ส่งออก CSV (Excel)</button>
           <button class="btn" data-act="export-json">💾 สำรองข้อมูล (JSON)</button>
           <label class="btn">📂 กู้คืนจากไฟล์สำรอง<input type="file" id="importFile" accept="application/json,.json" hidden></label>
-          <button class="btn ghost" data-act="sample">✨ เพิ่มข้อมูลตัวอย่าง</button>
+          ${S.sampleData().transactions.length
+            ? '<button class="btn" data-act="remove-sample">↩️ ลบข้อมูลตัวอย่าง</button>'
+            : '<button class="btn ghost" data-act="sample">✨ เพิ่มข้อมูลตัวอย่าง</button>'}
           <button class="btn danger" data-act="reset">🗑️ ลบข้อมูลทั้งหมด</button>
         </div>
       </section>`;
@@ -964,7 +980,14 @@
     'print': () => window.print(),
     'export-csv': () => download(`aitrack-${U.toISODate(new Date())}.csv`, U.toCSV(S.transactions, catName), 'text/csv;charset=utf-8'),
     'export-json': () => download(`aitrack-backup-${U.toISODate(new Date())}.json`, S.exportJSON(), 'application/json'),
-    'sample': () => { S.loadSample(); toast('เพิ่มข้อมูลตัวอย่าง 6 เดือนแล้ว'); render(); },
+    'sample': () => { S.loadSample(); render(); toast('เพิ่มข้อมูลตัวอย่าง 6 เดือนแล้ว', 'เอาออก', () => { S.removeSample(); render(); }); },
+    'remove-sample': () => {
+      const n = S.sampleData().transactions.length;
+      if (!confirm(`ลบข้อมูลตัวอย่าง ${n.toLocaleString('th-TH')} รายการ?\nรายการที่คุณบันทึกเองจะไม่ถูกลบ`)) return;
+      const removed = S.removeSample();
+      render();
+      toast(`ลบข้อมูลตัวอย่าง ${removed.transactions.length.toLocaleString('th-TH')} รายการแล้ว`, 'เลิกทำ', () => { S.restoreSample(removed); render(); });
+    },
     'reset': () => { if (confirm('ลบข้อมูลทั้งหมดรวมถึงหมวดหมู่ที่ตั้งไว้? การกระทำนี้ย้อนกลับไม่ได้')) { S.reset(); toast('ลบข้อมูลทั้งหมดแล้ว'); render(); } },
     'add-in-cat': (el) => { const cat = S.getCategory(el.dataset.id); if (cat) openDialog(null, { type: catType(cat), categoryId: cat.id }); },
     'plan-record': (el) => {
