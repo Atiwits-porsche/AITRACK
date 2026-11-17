@@ -127,3 +127,22 @@ test('planTotals and planByCategory', () => {
 test('nowHHMM pads hours and minutes', () => {
   assert.equal(U.nowHHMM(new Date(2026, 0, 1, 7, 5)), '07:05');
 });
+
+test('findSampleIds: marked ids and an old unmarked sample burst, never hand-entered data', () => {
+  const t0 = 1_700_000_000_000;
+  const notes = ['มื้อกลางวัน', 'กาแฟ', 'BTS', 'เงินเดือน'];
+  const burst = Array.from({ length: 40 }, (_, i) => ({ id: 'u' + i, note: notes[i % 4], createdAt: t0 + i }));
+  const own = [
+    { id: 'mine1', note: 'กาแฟ', createdAt: t0 + 60_000 },
+    { id: 'mine2', note: 'ข้าวมันไก่', createdAt: t0 + 120_000 },
+    { id: 'plan-x-2026-11', note: 'เงินเดือน', createdAt: t0 + 200_000 },
+  ];
+  const marked = [{ id: 'sample-abc', note: 'อะไรก็ได้', createdAt: t0 + 300_000 }];
+  const ids = U.findSampleIds([...own, ...burst, ...marked]);
+  assert.equal(ids.size, 41);
+  assert.ok(ids.has('u0') && ids.has('u39') && ids.has('sample-abc'));
+  assert.ok(!ids.has('mine1') && !ids.has('mine2') && !ids.has('plan-x-2026-11'));
+  // A quick import of real notes (different text) is not mistaken for samples.
+  const imported = Array.from({ length: 40 }, (_, i) => ({ id: 'r' + i, note: 'ร้าน ' + i, createdAt: t0 + i }));
+  assert.equal(U.findSampleIds(imported).size, 0);
+});

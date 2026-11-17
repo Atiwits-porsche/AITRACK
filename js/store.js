@@ -31,6 +31,17 @@
   const RENAMED_DEFAULTS = { food: ['อาหาร', 'ค่ากิน'], transport: ['เดินทาง', 'ค่าเดินทาง'], home: ['ที่พัก/ค่าเช่า', 'ค่าห้อง/ที่พัก'], fun: ['บันเทิง', 'ค่าบันเทิง'] };
 
   const clone = (o) => JSON.parse(JSON.stringify(o));
+
+  const SAMPLE_PLAN = [
+    { id: 'sample-salary', kind: 'income', categoryId: 'salary', amount: 35000, label: 'เงินเดือน' },
+    { id: 'sample-rent', kind: 'fixed', categoryId: 'home', amount: 8500, label: 'ค่าห้อง' },
+    { id: 'sample-bills', kind: 'fixed', categoryId: 'bills', amount: 1500, label: 'ค่าน้ำ/ไฟ/เน็ต' },
+    { id: 'sample-food', kind: 'budget', categoryId: 'food', amount: 6000, label: '' },
+    { id: 'sample-transport', kind: 'budget', categoryId: 'transport', amount: 2500, label: '' },
+    { id: 'sample-fun', kind: 'budget', categoryId: 'fun', amount: 1500, label: '' },
+  ];
+  /** A sample plan row the person has not changed (an edited one is theirs now, so it stays). */
+  const isUntouchedSamplePlan = (i) => SAMPLE_PLAN.some((p) => p.id === i.id && p.kind === i.kind && p.categoryId === i.categoryId && p.amount === i.amount && p.label === i.label);
   const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
   function fresh() {
@@ -269,16 +280,10 @@
       const rand = (a, b) => Math.round((a + Math.random() * (b - a)) / 5) * 5;
       const notes = { food: ['มื้อกลางวัน', 'กาแฟ', 'มื้อเย็น', 'มื้อเช้า'], transport: ['BTS', 'เติมน้ำมัน', 'แท็กซี่'], shopping: ['เสื้อผ้า', 'ของใช้ในบ้าน'], fun: ['ดูหนัง', 'Netflix'], health: ['ร้านยา'] };
       const foodTimes = ['12:15', '09:40', '19:05', '07:30'];
+      const stamp = Date.now();
       const has = (id) => !!Store.getCategory(id);
       if (!data.settings.plan.items.length) {
-        data.settings.plan = normPlan({ items: [
-          { id: 'sample-salary', kind: 'income', categoryId: 'salary', amount: 35000, label: 'เงินเดือน' },
-          { id: 'sample-rent', kind: 'fixed', categoryId: 'home', amount: 8500, label: 'ค่าห้อง' },
-          { id: 'sample-bills', kind: 'fixed', categoryId: 'bills', amount: 1500, label: 'ค่าน้ำ/ไฟ/เน็ต' },
-          { id: 'sample-food', kind: 'budget', categoryId: 'food', amount: 6000 },
-          { id: 'sample-transport', kind: 'budget', categoryId: 'transport', amount: 2500 },
-          { id: 'sample-fun', kind: 'budget', categoryId: 'fun', amount: 1500 },
-        ].filter((i) => has(i.categoryId)) });
+        data.settings.plan = normPlan({ items: SAMPLE_PLAN.filter((i) => has(i.categoryId)) });
         settingsChanged();
       }
       const planItem = (id) => data.settings.plan.items.find((i) => i.id === id);
@@ -290,7 +295,7 @@
         const push = (type, categoryId, amount, day, note, time, id) => {
           if (!has(categoryId)) categoryId = (data.categories[type].find((c) => c.other) || data.categories[type][0]).id;
           if (id && data.transactions.some((x) => x.id === id)) return;
-          const t = { id: id || U.uuid(), createdAt: Date.now(), type, categoryId, amount, date: d(day), time: time || '', note: note || '' };
+          const t = { id: id || 'sample-' + U.uuid(), createdAt: stamp, type, categoryId, amount, date: d(day), time: time || '', note: note || '' };
           data.transactions.push(t);
           emit({ kind: 'upsert', tx: t });
         };
@@ -308,6 +313,36 @@
           if (day % 17 === 0) push('expense', 'health', rand(100, 600), day, notes.health[0], '10:20');
         }
       }
+      save();
+    },
+
+    /** What "remove sample data" would take away: sample entries and untouched sample plan rows. */
+    sampleData() {
+      const ids = U.findSampleIds(data.transactions);
+      return {
+        transactions: data.transactions.filter((t) => ids.has(t.id)),
+        plan: data.settings.plan.items.filter(isUntouchedSamplePlan),
+      };
+    },
+    /** Remove sample data, keeping everything the person entered. Returns what was removed (for undo). */
+    removeSample() {
+      const removed = Store.sampleData();
+      const txIds = new Set(removed.transactions.map((t) => t.id));
+      const planIds = new Set(removed.plan.map((i) => i.id));
+      data.transactions = data.transactions.filter((t) => !txIds.has(t.id));
+      data.settings.plan.items = data.settings.plan.items.filter((i) => !planIds.has(i.id));
+      save();
+      txIds.forEach((id) => emit({ kind: 'delete', id }));
+      if (planIds.size) settingsChanged();
+      return removed;
+    },
+    /** Undo removeSample(). */
+    restoreSample(removed) {
+      const have = new Set(data.transactions.map((t) => t.id));
+      for (const t of removed.transactions) if (!have.has(t.id)) { data.transactions.push(t); emit({ kind: 'upsert', tx: t }); }
+      const planHave = new Set(data.settings.plan.items.map((i) => i.id));
+      const back = removed.plan.filter((i) => !planHave.has(i.id));
+      if (back.length) { data.settings.plan.items.push(...back); settingsChanged(); }
       save();
     },
   };
